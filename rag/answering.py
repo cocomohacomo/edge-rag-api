@@ -92,7 +92,8 @@ def _slot_values(slot: str, evidence: str) -> list[str]:
         "deadline": r"(?:\d{1,4}年)?\d{1,2}月\d{1,2}日|\d{1,2}月\d{1,2}日",
         "device": r"i[3579]-?\d{3,5}|Windows\s*\d+",
         "memory": r"\d+(?:\.\d+)?\s*(?:GB|MB|GiB|MiB|RAM)",
-        "quantity": r"\d+(?:[.,]\d+)?",\n        "method": r"SQLite FTS5|FTS5|2-gram|BM25|n-gram|ベクトル検索|ローカル実行|CPUのみ",
+        "quantity": r"\d+(?:[.,]\d+)?",
+        "method": r"SQLite FTS5|FTS5|2-gram|BM25|n-gram|ベクトル検索|ローカル実行|CPUのみ",
     }
     pattern = patterns.get(slot)
     return list(dict.fromkeys(re.findall(pattern, evidence, re.I))) if pattern else []
@@ -204,6 +205,7 @@ def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 
     return (
         "日本語で回答。根拠だけを使い、質問が求める属性を漏れなく簡潔に回答する。"
         "複数項目は「、」で列挙し、質問文や見出しを繰り返さない。推測・一般論は禁止。"
+        "回答が完結したら末尾に <END_ANSWER>、続きが必要なら <CONTINUE> を付ける。"
         "根拠がなければ「文書に記載がありません」と答える。\n"
         f"Q:{question}\n根拠:{evidence}\nA:"
     )
