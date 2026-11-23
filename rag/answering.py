@@ -92,7 +92,7 @@ def _slot_values(slot: str, evidence: str) -> list[str]:
         "deadline": r"(?:\d{1,4}年)?\d{1,2}月\d{1,2}日|\d{1,2}月\d{1,2}日",
         "device": r"i[3579]-?\d{3,5}|Windows\s*\d+",
         "memory": r"\d+(?:\.\d+)?\s*(?:GB|MB|GiB|MiB|RAM)",
-        "quantity": r"\d+(?:[.,]\d+)?",
+        "quantity": r"\d+(?:[.,]\d+)?",\n        "method": r"SQLite FTS5|FTS5|2-gram|BM25|n-gram|ベクトル検索|ローカル実行|CPUのみ",
     }
     pattern = patterns.get(slot)
     return list(dict.fromkeys(re.findall(pattern, evidence, re.I))) if pattern else []
