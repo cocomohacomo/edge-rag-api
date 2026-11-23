@@ -73,7 +73,7 @@ class CoreTests(unittest.TestCase):
         def broken(_prompt):
             calls.append(1)
             return '' if len(calls) == 1 else '全く関係のない回答です。'
-        result = answer_with_pipeline('会議の担当者と提出期限は？', hits, broken, retry=True, continuation=False)
+        result = answer_with_pipeline('会議の担当者と提出期限は？', hits, broken, retry=True, continuation=False, prefer_evidence_assembly=False)
         self.assertEqual(len(calls), 2)
         self.assertEqual(result['status'], 'evidence_assembled')
         self.assertIn('佐藤', result['answer'])
@@ -95,7 +95,7 @@ class CoreTests(unittest.TestCase):
         calls = []
         result = answer_with_pipeline('会議の担当者と提出期限は？', hits,
                                       lambda _prompt: calls.append(1) or '', continuation=False)
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 0)
         self.assertEqual(result['status'], 'evidence_assembled')
 
     def test_validator_rejects_internal_model_tags(self):
@@ -120,7 +120,7 @@ class CoreTests(unittest.TestCase):
                  'text': '対象端末はIntel i5-10310U。メモリ要件は8GB RAM。'}]
         result = answer_with_pipeline('端末とメモリ要件は？', hits,
             lambda _prompt: {'content': '対象端末はIntel i5-10310Uで、メモリは',
-                             'stop': False, 'tokens_predicted': 48, 'n_predict': 48})
+                             'stop': False, 'tokens_predicted': 48, 'n_predict': 48}, prefer_evidence_assembly=False)
         self.assertEqual(result['status'], 'evidence_assembled')
         self.assertIn('8GB', result['answer'])
 
@@ -136,7 +136,7 @@ class CoreTests(unittest.TestCase):
                         'stop': False, 'tokens_predicted': 48, 'n_predict': 48}
             return {'content': '提出期限は12月15日です。<END_ANSWER>',
                     'stop': True, 'tokens_predicted': 12, 'n_predict': 24}
-        result = answer_with_pipeline('会議の担当者と提出期限は？', hits, generator)
+        result = answer_with_pipeline('会議の担当者と提出期限は？', hits, generator, prefer_evidence_assembly=False)
         self.assertEqual(result['status'], 'generated')
         self.assertIn('佐藤', result['answer'])
         self.assertIn('12月15日', result['answer'])
@@ -153,7 +153,7 @@ class CoreTests(unittest.TestCase):
             return {'content': '担当者は佐藤です。<CONTINUE>',
                     'stop': True, 'tokens_predicted': 10, 'n_predict': 24}
         result = answer_with_pipeline('会議の担当者と提出期限は？', hits, generator,
-                                      max_continuations=1)
+                                      max_continuations=1, prefer_evidence_assembly=False)
         self.assertEqual(len(calls), 2)
         self.assertEqual(result['status'], 'evidence_assembled')
 
