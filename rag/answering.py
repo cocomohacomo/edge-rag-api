@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 from typing import Callable, Iterable
+import json
+import urllib.request
 
 try:
     from .core import japanese_terms
@@ -166,3 +168,25 @@ def answer_with_pipeline(
                         "retrieval": decision}
     return {"answer": extractive_fallback(question, selected), "status": "extractive_fallback",
             "reason": "generation_unavailable_or_invalid", "retrieval": decision}
+
+
+def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: int = 96,
+                          timeout: int = 300) -> Callable[[str], str]:
+    """Create an offline-only adapter for a locally running llama.cpp server."""
+    from urllib.parse import urlparse
+    parsed = urlparse(endpoint)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("LLM endpoint must be a local HTTP loopback address")
+    url = endpoint.rstrip("/") + "/completion"
+
+    def generate(prompt: str) -> str:
+        payload = json.dumps({
+            "prompt": prompt, "n_predict": max_tokens, "temperature": 0.0,
+            "top_k": 1, "top_p": 1.0, "seed": 42, "cache_prompt": False,
+        }, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(url, data=payload,
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        return str(body.get("content") or "")
+    return generate
