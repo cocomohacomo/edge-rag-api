@@ -1,0 +1,8 @@
+{
+  "mode": "offline",
+  "network": {"external_access": false, "model_download": false},
+  "database": "storage/database/rag.sqlite3",
+  "chunking": {"size_chars": 420, "overlap_chars": 70},
+  "retrieval": {"top_k": 5, "strategy": "fts5_japanese_bigram_plus_overlap"},
+  "llm": {"enabled": false, "provider": "none", "note": "初版は検索根拠抜粋モード。LLM未接続。"}
+}
