@@ -227,7 +227,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(plan["missing_requirements"], [])
         self.assertIn("佐藤", plan["evidence_mapping"]["owner"][0]["values"])
         self.assertIn("12月15日", plan["evidence_mapping"]["deadline"][0]["values"])
-        self.assertIn("https://example.com/docs。", plan["evidence_mapping"]["url"][0]["values"][0])
+        self.assertEqual(plan["evidence_mapping"]["url"][0]["values"][0], "https://example.com/docs")
         self.assertIn("docs/spec.md", plan["evidence_mapping"]["path"][0]["values"])
 
     def test_answer_plan_tracks_missing_evidence_without_inventing_values(self):
