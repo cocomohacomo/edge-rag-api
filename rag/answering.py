@@ -464,56 +464,101 @@ def answer_with_pipeline(
     rounds = []
     last_reason = "empty"
     max_rounds = 1 + (max(0, min(2, max_continuations)) if continuation else 0)
+
+    # Explicit bounded generation state machine. A round may continue only when
+    # the partial answer is grounded and retrieved evidence can fill a missing slot.
+    state = "initial"
     for round_index in range(max_rounds):
-        prompt = base_prompt if round_index == 0 else _continuation_prompt(
-            base_prompt, accumulated, _missing_slots(question, accumulated, selected)
-        )
+        if round_index == 0:
+            prompt = base_prompt
+            state = "generating_initial"
+        else:
+            missing_before = _missing_slots(question, accumulated, selected)
+            prompt = _continuation_prompt(base_prompt, accumulated, missing_before)
+            state = "generating_continuation"
         try:
             raw = generator(prompt)
             candidate, metadata = _generation_payload(raw)
-        except Exception:
-            candidate, metadata = "", {}
+        except Exception as exc:
+            rounds.append({
+                "round": round_index + 1, "tokens": 0, "budget": 0,
+                "truncated": False, "marker": None, "state": "generation_error",
+                "error": type(exc).__name__,
+            })
+            last_reason = "generation_error"
+            state = "failed"
+            break
+
         candidate, marker = _strip_control_markers(candidate)
+        truncated = _is_truncated(metadata)
         rounds.append({
             "round": round_index + 1,
             "tokens": int(metadata.get("tokens_predicted") or metadata.get("generated_tokens") or 0),
             "budget": int(metadata.get("n_predict") or metadata.get("budget") or 0),
-            "truncated": _is_truncated(metadata),
+            "truncated": truncated,
             "marker": marker,
+            "state": "received",
         })
+
         previous = accumulated
         if candidate:
             accumulated = _append_without_overlap(accumulated, candidate)
         valid, last_reason = validate_answer(accumulated, question, selected)
         missing = _missing_slots(question, accumulated, selected)
         text_complete = bool(re.search(r"[。！？!?）」』】]$", accumulated.strip()))
-        # Completion is determined by evidence and requested-slot coverage, not
-        # by the model's marker or token-limit flag. A complete answer must not
-        # trigger another expensive inference merely because n_predict was hit.
-        semantic_complete = valid and not missing and text_complete
-        if semantic_complete:
+        if valid and not missing and text_complete:
+            rounds[-1]["state"] = "completed"
+            state = "completed"
             return {"answer": accumulated.strip(), "status": "generated",
                     "reason": "semantic_completion", "retrieval": decision,
                     "generation_rounds": rounds, "missing_slots": [],
                     "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
+
         if not continuation or round_index + 1 >= max_rounds:
+            rounds[-1]["state"] = "round_limit" if round_index + 1 >= max_rounds else "single_pass"
+            state = "exhausted"
             break
-        if not accumulated:
-            last_reason = "empty"
+        if not accumulated or accumulated == previous:
+            rounds[-1]["state"] = "no_progress"
+            state = "stalled"
             break
-        # Continue only when a requested slot is absent from the answer but
-        # its concrete value is present in retrieved evidence. A merely unfinished
-        # sentence or a model CONTINUE marker is not enough: prior E2E runs showed
-        # those cases often consumed two more rounds and still fell back.
+
+        # Do not ask the model to invent absent facts. Every missing requirement
+        # must have at least one concrete value in retrieved evidence.
         evidence_text = " ".join(str(hit.get("text", "")) for hit in selected)
-        continuable_missing = [
-            slot for slot in missing if _slot_values(slot, evidence_text)
-        ]
-        if not valid or not continuable_missing:
+        continuable_missing = [slot for slot in missing if _slot_values(slot, evidence_text)]
+        if missing and len(continuable_missing) != len(missing):
+            rounds[-1]["state"] = "missing_evidence"
+            state = "blocked"
             break
-        # Repeated output cannot add information; stop rather than burn a round.
-        if accumulated == previous:
+
+        # A continuation is useful only when the accumulated text itself is
+        # evidence-aligned. A marker or truncation flag alone never authorizes it.
+        answer_terms = set(japanese_terms(accumulated))
+        evidence_terms = set(japanese_terms(evidence_text))
+        overlap = len(answer_terms & evidence_terms) / max(1, len(answer_terms))
+        unsupported_numbers = re.findall(
+            r"(?<![A-Za-z])\\d+(?:[.,]\\d+)?(?:%|GB|MB|日|月|年|時|分)?",
+            accumulated, re.I
+        )
+        evidence_numbers = set(re.findall(
+            r"(?<![A-Za-z])\\d+(?:[.,]\\d+)?(?:%|GB|MB|日|月|年|時|分)?",
+            evidence_text, re.I
+        ))
+        if overlap < 0.45 or any(value not in evidence_numbers for value in unsupported_numbers):
+            rounds[-1]["state"] = "ungrounded_partial"
+            state = "blocked"
             break
+
+        # Missing evidence-backed slots take priority. Otherwise continue only
+        # when the model explicitly requested continuation or hit its token cap.
+        should_continue = bool(continuable_missing) or marker == "continue" or truncated
+        if not should_continue:
+            rounds[-1]["state"] = "model_finished"
+            state = "finished_incomplete"
+            break
+        rounds[-1]["state"] = "continue"
+        state = "continuing"
 
     if retry and not accumulated:
         try:
