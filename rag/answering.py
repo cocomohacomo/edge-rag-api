@@ -55,6 +55,106 @@ def _generation_payload(value: object) -> tuple[str, dict]:
     return str(value or ""), {}
 
 
+
+END_MARKER = "<END_ANSWER>"
+CONTINUE_MARKER = "<CONTINUE>"
+
+
+def _strip_control_markers(text: str) -> tuple[str, str | None]:
+    state = "continue" if CONTINUE_MARKER in text else ("end" if END_MARKER in text else None)
+    cleaned = text.replace(END_MARKER, "").replace(CONTINUE_MARKER, "").strip()
+    return cleaned, state
+
+
+def _required_slots(question: str) -> dict[str, re.Pattern]:
+    q = question
+    slots = {}
+    if re.search(r"担当者|責任者|氏名|誰|だれ", q):
+        slots["owner"] = re.compile(r"担当者|責任者|氏名|[一-龥]{2,4}")
+    if re.search(r"期限|締切|期日|いつまで", q):
+        slots["deadline"] = re.compile(r"\\d{1,4}年|\\d{1,2}月|\\d{1,2}日|期限|締切|期日")
+    if re.search(r"端末|CPU|プロセッサ", q, re.I):
+        slots["device"] = re.compile(r"i[3579]-?\\d{3,5}|Windows|CPU|プロセッサ", re.I)
+    if re.search(r"メモリ|RAM|容量", q, re.I):
+        slots["memory"] = re.compile(r"\\d+(?:\\.\\d+)?\\s*(?:GB|MB|GiB|MiB|RAM)", re.I)
+    if re.search(r"方式|方法|構成|どうやって|何を使", q):
+        slots["method"] = re.compile(r"方式|方法|構成|使用|利用|実行|FTS5|2-gram|CPU|ローカル|オフライン")
+    if re.search(r"何件|何人|何個|何回|何％|割合|数値|件数|人数", q):
+        slots["quantity"] = re.compile(r"\\d+(?:[.,]\\d+)?")
+    if re.search(r"場所|地域|住所|どこ", q):
+        slots["location"] = re.compile(r"場所|地域|住所|市|町|村|県")
+    return slots
+
+
+def _slot_values(slot: str, evidence: str) -> list[str]:
+    patterns = {
+        "owner": r"(?:担当者|責任者|氏名)\\s*(?:は|:|：)?\\s*([一-龥ぁ-んァ-ヶA-Za-z]{2,8})",
+        "deadline": r"(?:\\d{1,4}年)?\\d{1,2}月\\d{1,2}日|\\d{1,2}月\\d{1,2}日",
+        "device": r"i[3579]-?\\d{3,5}|Windows\\s*\\d+",
+        "memory": r"\\d+(?:\\.\\d+)?\\s*(?:GB|MB|GiB|MiB|RAM)",
+        "quantity": r"\\d+(?:[.,]\\d+)?",
+    }
+    pattern = patterns.get(slot)
+    return list(dict.fromkeys(re.findall(pattern, evidence, re.I))) if pattern else []
+
+
+def _missing_slots(question: str, answer: str, hits: Iterable[dict]) -> list[str]:
+    evidence = " ".join(str(h.get("text", "")) for h in hits)
+    missing = []
+    for slot, pattern in _required_slots(question).items():
+        values = _slot_values(slot, evidence)
+        if values:
+            if not any(value.lower() in answer.lower() for value in values):
+                missing.append(slot)
+        elif not pattern.search(answer):
+            missing.append(slot)
+    return missing
+
+
+def _is_truncated(metadata: dict) -> bool:
+    if not metadata:
+        return False
+    if metadata.get("stopped_limit") is True:
+        return True
+    budget = int(metadata.get("n_predict") or metadata.get("budget") or 0)
+    predicted = int(metadata.get("tokens_predicted") or metadata.get("generated_tokens") or 0)
+    if metadata.get("stop") is False:
+        return True
+    if budget and predicted >= budget and not (
+        metadata.get("stopped_eos") is True or metadata.get("stopped_word") is True
+        or metadata.get("stop") is True
+    ):
+        return True
+    return False
+
+
+def _append_without_overlap(previous: str, addition: str) -> str:
+    addition = addition.strip()
+    if not previous:
+        return addition
+    if not addition or addition in previous:
+        return previous
+    max_overlap = min(len(previous), len(addition), 160)
+    for size in range(max_overlap, 7, -1):
+        if previous[-size:] == addition[:size]:
+            return previous + addition[size:]
+    # Avoid a repeated first sentence when the model ignores the continuation instruction.
+    first = re.split(r"(?<=[。！？!?])", addition, maxsplit=1)[0].strip()
+    if first and first in previous:
+        addition = addition[len(first):].lstrip(" 、，。\n")
+    return previous + ("" if not addition else ("\n" if previous.endswith(("。", "！", "？", "\n")) else "") + addition)
+
+
+def _continuation_prompt(base_prompt: str, accumulated: str, missing: list[str]) -> str:
+    return (
+        base_prompt + accumulated +
+        "\\n\\n[CONTINUATION]\\n前回の回答に続けてください。既出内容を繰り返さず、"
+        "不足情報だけを根拠から補ってください。"
+        f"未充足項目: {', '.join(missing) if missing else '文章の完結'}。"
+        f"意味的に完結したら {END_MARKER}、続きが必要なら {CONTINUE_MARKER} を末尾に付けてください。\\n"
+    )
+
+
 def retrieval_gate(
     question: str,
     hits: Iterable[dict],
@@ -191,37 +291,83 @@ def answer_with_pipeline(
     generator: Callable[[str], str] | None = None,
     *,
     retry: bool = False,
+    continuation: bool = True,
+    max_continuations: int = 2,
 ) -> dict:
-    """Gate -> evidence prompt -> validate -> one constrained retry -> extractive fallback."""
+    """Evidence gate -> bounded semantic continuation -> validation -> extractive fallback."""
     decision = retrieval_gate(question, hits)
     if not decision.accepted:
         return {"answer": ABSTAIN, "status": "abstained", "reason": decision.reason,
-                "retrieval": decision}
+                "retrieval": decision, "generation_rounds": 0}
     selected = list(decision.accepted)
-    if generator is not None:
-        prompt = build_evidence_prompt(question, selected)
+    if generator is None:
+        return {"answer": extractive_fallback(question, selected), "status": "extractive_fallback",
+                "reason": "generation_unavailable", "retrieval": decision, "generation_rounds": 0}
+
+    base_prompt = build_evidence_prompt(question, selected)
+    accumulated = ""
+    rounds = []
+    last_reason = "empty"
+    max_rounds = 1 + (max(0, min(2, max_continuations)) if continuation else 0)
+    for round_index in range(max_rounds):
+        prompt = base_prompt if round_index == 0 else _continuation_prompt(
+            base_prompt, accumulated, _missing_slots(question, accumulated, selected)
+        )
         try:
-            generated = generator(prompt)
-            candidate, metadata = _generation_payload(generated)
+            raw = generator(prompt)
+            candidate, metadata = _generation_payload(raw)
         except Exception:
             candidate, metadata = "", {}
-        valid, reason = validate_answer(candidate, question, selected, metadata)
-        if valid and reason != "abstention":
-            return {"answer": candidate.strip(), "status": "generated", "reason": "accepted",
-                    "retrieval": decision}
-        if retry:
-            retry_prompt = prompt + "\n直前の回答は検証に失敗しました。根拠中の回答可能な事実だけを1文で回答してください。"
-            try:
-                generated = generator(retry_prompt)
-                candidate, metadata = _generation_payload(generated)
-            except Exception:
-                candidate, metadata = "", {}
-            valid, reason = validate_answer(candidate, question, selected, metadata)
-            if valid and reason != "abstention":
-                return {"answer": candidate.strip(), "status": "regenerated", "reason": "accepted",
-                        "retrieval": decision}
-    return {"answer": extractive_fallback(question, selected), "status": "extractive_fallback",
-            "reason": "generation_unavailable_or_invalid", "retrieval": decision}
+        candidate, marker = _strip_control_markers(candidate)
+        rounds.append({
+            "round": round_index + 1,
+            "tokens": int(metadata.get("tokens_predicted") or metadata.get("generated_tokens") or 0),
+            "budget": int(metadata.get("n_predict") or metadata.get("budget") or 0),
+            "truncated": _is_truncated(metadata),
+            "marker": marker,
+        })
+        if candidate:
+            accumulated = _append_without_overlap(accumulated, candidate)
+        valid, last_reason = validate_answer(accumulated, question, selected)
+        missing = _missing_slots(question, accumulated, selected)
+        text_complete = bool(re.search(r"[。！？!?）」』】]$", accumulated.strip()))
+        forced_continue = marker == "continue" or _is_truncated(metadata)
+        semantic_complete = valid and not missing and text_complete and marker != "continue"
+        if semantic_complete:
+            return {"answer": accumulated.strip(), "status": "generated",
+                    "reason": "semantic_completion", "retrieval": decision,
+                    "generation_rounds": rounds, "missing_slots": []}
+        if not continuation or round_index + 1 >= max_rounds:
+            break
+        if not accumulated:
+            last_reason = "empty"
+            continue
+        # Continue for truncation, explicit CONTINUE, missing requested attributes,
+        # or an unfinished sentence. Otherwise a validator rejection is terminal.
+        if not (forced_continue or missing or not text_complete):
+            break
+        # Do not spend another model call when the latest round added no new text.
+        if round_index > 0 and rounds[-1]["tokens"] == 0:
+            break
+
+    if retry and not accumulated:
+        try:
+            raw = generator(base_prompt + "\\n根拠中の回答可能な事実だけを簡潔に回答してください。")
+            candidate, _ = _generation_payload(raw)
+            candidate, _ = _strip_control_markers(candidate)
+            accumulated = candidate
+        except Exception:
+            pass
+    valid, last_reason = validate_answer(accumulated, question, selected)
+    missing = _missing_slots(question, accumulated, selected)
+    if valid and not missing and re.search(r"[。！？!?）」』】]$", accumulated.strip()):
+        return {"answer": accumulated.strip(), "status": "generated",
+                "reason": "semantic_completion", "retrieval": decision,
+                "generation_rounds": rounds, "missing_slots": []}
+    fallback = extractive_fallback(question, selected, max_sentences=4)
+    return {"answer": fallback, "status": "extractive_fallback",
+            "reason": last_reason if last_reason != "accepted" else "incomplete_answer",
+            "retrieval": decision, "generation_rounds": rounds, "missing_slots": missing}
 
 
 def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: int = 48,
@@ -235,7 +381,7 @@ def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: i
 
     def generate(prompt: str) -> dict:
         question = prompt.split("\nQ:", 1)[-1].split("\n根拠:", 1)[0]
-        budget = generation_budget(question, max_tokens)
+        budget = min(24, max_tokens) if "[CONTINUATION]" in prompt else generation_budget(question, max_tokens)
         payload = json.dumps({
             "prompt": prompt, "n_predict": budget, "temperature": 0.0,
             "top_k": 1, "top_p": 1.0, "seed": 42, "cache_prompt": True,
@@ -245,5 +391,5 @@ def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: i
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
         return {"content": str(body.get("content") or ""), "stop": body.get("stop"),
-                "tokens_predicted": body.get("tokens_predicted"), "n_predict": budget}
+                "stopped_eos": body.get("stopped_eos"), "stopped_word": body.get("stopped_word"),\n                "stopped_limit": body.get("stopped_limit"), "stop": body.get("stop"),\n                "tokens_predicted": body.get("tokens_predicted"), "n_predict": budget}
     return generate
