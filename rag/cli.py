@@ -1,7 +1,8 @@
 from __future__ import annotations
 import argparse, sys
 from pathlib import Path
-from core import Store, extract_file, answer_from_context
+from core import Store, extract_file
+from answering import answer_with_pipeline
 
 
 def ingest(store: Store, paths: list[Path]) -> int:
@@ -53,11 +54,12 @@ def main():
                     break
                 if not q:
                     continue
-                hits = store.search(q, 5)
-                answer = answer_from_context(q, hits)
+                hits = store.search(q, 12)
+                result = answer_with_pipeline(q, hits)
+                answer = result["answer"]
                 store.log('user', q)
                 store.log('assistant', answer)
-                print('\n' + answer)
+                print(f'\n[{result["status"]}] {answer}')
     finally:
         store.close()
 
