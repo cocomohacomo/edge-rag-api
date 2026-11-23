@@ -429,6 +429,7 @@ def answer_with_pipeline(
     retry: bool = False,
     continuation: bool = True,
     max_continuations: int = 2,
+    prefer_evidence_assembly: bool = True,
 ) -> dict:
     """Evidence gate -> bounded semantic continuation -> validation -> extractive fallback."""
     decision = retrieval_gate(question, hits)
@@ -438,6 +439,14 @@ def answer_with_pipeline(
                 "retrieval": decision, "generation_rounds": 0,
                 "answer_plan": plan, "progress": build_progress_summary(plan)}
     selected = list(decision.accepted)
+    if prefer_evidence_assembly:
+        assembled = assemble_evidence_answer(plan)
+        assembled_valid = bool(assembled) and validate_answer(assembled, question, selected)[0]
+        if assembled_valid:
+            return {"answer": assembled, "status": "evidence_assembled",
+                    "reason": "pre_generation_all_requirements_have_direct_evidence",
+                    "retrieval": decision, "generation_rounds": 0, "missing_slots": [],
+                    "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
     if generator is None:
         assembled = assemble_evidence_answer(plan)
         assembled_valid = bool(assembled) and validate_answer(assembled, question, selected)[0]
