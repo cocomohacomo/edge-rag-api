@@ -164,5 +164,31 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn('<END_ANSWER>', result['answer'])
         self.assertEqual(result['status'], 'generated')
 
+
+    def test_complete_answer_does_not_continue_on_token_limit_marker(self):
+        hits = [{'score': .4, 'source': 'offline.md',
+                 'text': '初回導入後はオフラインで動作する。'}]
+        calls = []
+        def generator(_prompt):
+            calls.append(1)
+            return {'content': '初回導入後はオフラインで動作します。<CONTINUE>',
+                    'stopped_limit': True, 'tokens_predicted': 48, 'n_predict': 48}
+        result = answer_with_pipeline('初回導入後の動作は？', hits, generator)
+        self.assertEqual(result['status'], 'generated')
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn('<CONTINUE>', result['answer'])
+
+    def test_unsupported_partial_answer_does_not_trigger_continuation(self):
+        hits = [{'score': .4, 'source': 'audio.md',
+                 'text': 'CPUのみでローカル実行する方式を採用する。'}]
+        calls = []
+        def generator(_prompt):
+            calls.append(1)
+            return {'content': '今日は晴れです。<CONTINUE>',
+                    'stopped_limit': True, 'tokens_predicted': 48, 'n_predict': 48}
+        result = answer_with_pipeline('CPUのみで動く実行方式は？', hits, generator)
+        self.assertEqual(result['status'], 'extractive_fallback')
+        self.assertEqual(len(calls), 1)
+
 if __name__ == '__main__':
     unittest.main()
