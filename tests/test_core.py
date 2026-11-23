@@ -215,5 +215,22 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result['status'], 'extractive_fallback')
         self.assertEqual(len(calls), 1)
 
+
+    def test_evidence_prompt_explicitly_plans_requirements_and_preserves_identifiers(self):
+        hits = [{
+            "source": "spec.md",
+            "text": "担当者は佐藤です。期限は12月15日です。URLはhttps://example.com/docs。パスはdocs/spec.mdです。"
+        }]
+        prompt = build_evidence_prompt("担当者と期限、URL、パスは？", hits)
+        self.assertIn("要求属性:", prompt)
+        self.assertIn("owner", prompt)
+        self.assertIn("deadline", prompt)
+        self.assertIn("URL", prompt)
+        self.assertIn("パス", prompt)
+        self.assertIn("https://example.com/docs", prompt)
+        self.assertIn("docs/spec.md", prompt)
+        self.assertIn("文字列を改変せず正確に転記", prompt)
+
+
 if __name__ == '__main__':
     unittest.main()
