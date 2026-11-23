@@ -124,7 +124,6 @@ def _is_truncated(metadata: dict) -> bool:
     predicted = int(metadata.get("tokens_predicted") or metadata.get("generated_tokens") or 0)
     if budget and predicted >= budget and not (
         metadata.get("stopped_eos") is True or metadata.get("stopped_word") is True
-        or metadata.get("stop") is True
     ):
         return True
     return False
