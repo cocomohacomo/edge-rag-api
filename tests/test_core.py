@@ -96,7 +96,7 @@ class CoreTests(unittest.TestCase):
         result = answer_with_pipeline('会議の担当者と提出期限は？', hits,
                                       lambda _prompt: calls.append(1) or '', continuation=False)
         self.assertEqual(len(calls), 1)
-        self.assertEqual(result['status'], 'extractive_fallback')
+        self.assertEqual(result['status'], 'evidence_assembled')
 
     def test_validator_rejects_internal_model_tags(self):
         hits = [{'source': 'offline.md', 'text': '初回導入後はオフラインで動作する。'}]
@@ -121,7 +121,7 @@ class CoreTests(unittest.TestCase):
         result = answer_with_pipeline('端末とメモリ要件は？', hits,
             lambda _prompt: {'content': '対象端末はIntel i5-10310Uで、メモリは',
                              'stop': False, 'tokens_predicted': 48, 'n_predict': 48})
-        self.assertEqual(result['status'], 'extractive_fallback')
+        self.assertEqual(result['status'], 'evidence_assembled')
         self.assertIn('8GB', result['answer'])
 
 
@@ -155,7 +155,7 @@ class CoreTests(unittest.TestCase):
         result = answer_with_pipeline('会議の担当者と提出期限は？', hits, generator,
                                       max_continuations=1)
         self.assertEqual(len(calls), 2)
-        self.assertEqual(result['status'], 'extractive_fallback')
+        self.assertEqual(result['status'], 'evidence_assembled')
 
     def test_continuation_marker_is_not_exposed(self):
         hits = [{'score': .4, 'source': 'offline.md',
