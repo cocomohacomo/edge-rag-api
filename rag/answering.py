@@ -391,5 +391,7 @@ def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: i
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
         return {"content": str(body.get("content") or ""), "stop": body.get("stop"),
-                "stopped_eos": body.get("stopped_eos"), "stopped_word": body.get("stopped_word"),\n                "stopped_limit": body.get("stopped_limit"), "stop": body.get("stop"),\n                "tokens_predicted": body.get("tokens_predicted"), "n_predict": budget}
+                "stopped_eos": body.get("stopped_eos"), "stopped_word": body.get("stopped_word"),
+                "stopped_limit": body.get("stopped_limit"), "stop": body.get("stop"),
+                "tokens_predicted": body.get("tokens_predicted"), "n_predict": budget}
     return generate
