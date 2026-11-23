@@ -52,3 +52,6 @@ print(result["answer"], result["status"])
 ```
 
 `generator` はプロンプト文字列を受け取り回答文字列を返す関数です。LLM未接続時は省略でき、その場合も根拠抽出型回答として動作します。検証器は軽量な決定的ガードであり、意味的正しさを完全保証するものではありません。
+
+
+ローカルRWKV/llama.cppを接続する場合は、llama-serverをloopbackで起動したうえで `config/config.json` の `llm.enabled` を `true` にします。接続先は `127.0.0.1` / `localhost` / `::1` に限定され、外部APIには送信しません。未起動・生成失敗時は検証後に抽出型フォールバックへ移行します。
