@@ -72,7 +72,7 @@ class CoreTests(unittest.TestCase):
         def broken(_prompt):
             calls.append(1)
             return '' if len(calls) == 1 else '全く関係のない回答です。'
-        result = answer_with_pipeline('会議の担当者と提出期限は？', hits, broken, retry=True)
+        result = answer_with_pipeline('会議の担当者と提出期限は？', hits, broken, retry=True, continuation=False)
         self.assertEqual(len(calls), 2)
         self.assertEqual(result['status'], 'extractive_fallback')
         self.assertIn('佐藤', result['answer'])
@@ -93,7 +93,7 @@ class CoreTests(unittest.TestCase):
                  'text': '会議の担当者は佐藤です。提出期限は12月15日です。'}]
         calls = []
         result = answer_with_pipeline('会議の担当者と提出期限は？', hits,
-                                      lambda _prompt: calls.append(1) or '')
+                                      lambda _prompt: calls.append(1) or '', continuation=False)
         self.assertEqual(len(calls), 1)
         self.assertEqual(result['status'], 'extractive_fallback')
 
@@ -122,6 +122,47 @@ class CoreTests(unittest.TestCase):
                              'stop': False, 'tokens_predicted': 48, 'n_predict': 48})
         self.assertEqual(result['status'], 'extractive_fallback')
         self.assertIn('8GB', result['answer'])
+
+
+    def test_semantic_continuation_completes_missing_deadline(self):
+        hits = [{'score': .4, 'source': 'minutes.md',
+                 'text': '会議の担当者は佐藤です。提出期限は12月15日です。'}]
+        calls = []
+        def generator(prompt):
+            calls.append(prompt)
+            if len(calls) == 1:
+                return {'content': '担当者は佐藤です。<CONTINUE>',
+                        'stop': False, 'tokens_predicted': 48, 'n_predict': 48}
+            return {'content': '提出期限は12月15日です。<END_ANSWER>',
+                    'stop': True, 'tokens_predicted': 12, 'n_predict': 24}
+        result = answer_with_pipeline('会議の担当者と提出期限は？', hits, generator)
+        self.assertEqual(result['status'], 'generated')
+        self.assertIn('佐藤', result['answer'])
+        self.assertIn('12月15日', result['answer'])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(result['generation_rounds']), 2)
+        self.assertIn('担当者は佐藤です。', calls[1])
+
+    def test_semantic_continuation_stops_at_round_limit(self):
+        hits = [{'score': .4, 'source': 'minutes.md',
+                 'text': '会議の担当者は佐藤です。提出期限は12月15日です。'}]
+        calls = []
+        def generator(_prompt):
+            calls.append(1)
+            return {'content': '担当者は佐藤です。<CONTINUE>',
+                    'stop': True, 'tokens_predicted': 10, 'n_predict': 24}
+        result = answer_with_pipeline('会議の担当者と提出期限は？', hits, generator,
+                                      max_continuations=1)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(result['status'], 'extractive_fallback')
+
+    def test_continuation_marker_is_not_exposed(self):
+        hits = [{'score': .4, 'source': 'offline.md',
+                 'text': '初回導入後はオフラインで動作する。'}]
+        result = answer_with_pipeline('ネットワーク要件は？', hits,
+            lambda _prompt: '初回導入後はオフラインで動作します。<END_ANSWER>')
+        self.assertNotIn('<END_ANSWER>', result['answer'])
+        self.assertEqual(result['status'], 'generated')
 
 if __name__ == '__main__':
     unittest.main()
