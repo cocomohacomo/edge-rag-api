@@ -79,7 +79,7 @@ def main():
                 retrieval_hits += int(found)
                 call_metrics=[]
                 def generate(prompt):
-                    response=get_json(base+"/completion",{"prompt":prompt,"n_predict":args.max_tokens,"temperature":0.0,"top_k":1,"top_p":1.0,"seed":42,"cache_prompt":False},timeout=300)
+                    response=get_json(base+"/completion",{"prompt":prompt,"n_predict":args.max_tokens,"temperature":0.0,"top_k":1,"top_p":1.0,"seed":42,"cache_prompt":True},timeout=300)
                     timings=response.get("timings",{})
                     pms=float(timings.get("prompt_ms",0)); gms=float(timings.get("predicted_ms",0))
                     pn=int(timings.get("prompt_n",0)); gn=int(timings.get("predicted_n",0))
