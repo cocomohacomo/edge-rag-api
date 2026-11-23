@@ -114,12 +114,14 @@ def _missing_slots(question: str, answer: str, hits: Iterable[dict]) -> list[str
 def _is_truncated(metadata: dict) -> bool:
     if not metadata:
         return False
-    if metadata.get("stopped_limit") is True:
+    if metadata.get("stopped_limit") is True or metadata.get("truncated") is True:
         return True
+    if metadata.get("stop_type") == "limit":
+        return True
+    if metadata.get("stop_type") in {"eos", "word"}:
+        return False
     budget = int(metadata.get("n_predict") or metadata.get("budget") or 0)
     predicted = int(metadata.get("tokens_predicted") or metadata.get("generated_tokens") or 0)
-    if metadata.get("stop") is False:
-        return True
     if budget and predicted >= budget and not (
         metadata.get("stopped_eos") is True or metadata.get("stopped_word") is True
         or metadata.get("stop") is True
