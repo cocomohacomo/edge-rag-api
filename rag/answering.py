@@ -178,7 +178,9 @@ def _slot_values(slot: str, evidence: str) -> list[str]:
 def _missing_slots(question: str, answer: str, hits: Iterable[dict]) -> list[str]:
     evidence = " ".join(str(h.get("text", "")) for h in hits)
     missing = []
-    for slot, pattern in _required_slots(question).items():
+    for slot in _requirement_names(question):
+        pattern = _required_slots(question).get(slot, re.compile(r"https?://" if slot == "url" else r"/"))
+
         values = _slot_values(slot, evidence)
         if values:
             if not any(value.lower() in answer.lower() for value in values):
@@ -266,6 +268,7 @@ def retrieval_gate(
 
 def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 1400) -> str:
     """Compact evidence-first prompt with explicit abstention and answer-shape rules."""
+    hits = list(hits)
     blocks = []
     used = 0
     for i, hit in enumerate(hits, 1):
@@ -467,7 +470,8 @@ def answer_with_pipeline(
     if valid and not missing and re.search(r"[。！？!?）」』】]$", accumulated.strip()):
         return {"answer": accumulated.strip(), "status": "generated",
                 "reason": "semantic_completion", "retrieval": decision,
-                "generation_rounds": rounds, "missing_slots": []}
+                "generation_rounds": rounds, "missing_slots": [],
+                "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
     fallback = extractive_fallback(question, selected, max_sentences=4)
     return {"answer": fallback, "status": "extractive_fallback",
             "reason": last_reason if last_reason != "accepted" else "incomplete_answer",
