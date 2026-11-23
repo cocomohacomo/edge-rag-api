@@ -3,7 +3,7 @@ from pathlib import Path
 from rag.core import Store, chunks, japanese_terms, answer_from_context
 from rag.answering import (
     ABSTAIN, answer_with_pipeline, build_evidence_prompt, extractive_fallback,
-    retrieval_gate, validate_answer,
+    local_llama_generator, retrieval_gate, validate_answer,
 )
 
 
@@ -77,6 +77,13 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result['status'], 'extractive_fallback')
         self.assertIn('佐藤', result['answer'])
         self.assertIn('minutes.md', result['answer'])
+
+    def test_llm_adapter_rejects_non_loopback_endpoint(self):
+        with self.assertRaises(ValueError):
+            local_llama_generator('http://example.com:8080')
+
+    def test_llm_adapter_accepts_loopback_endpoint(self):
+        self.assertTrue(callable(local_llama_generator('http://127.0.0.1:8080')))
 
     def test_extractive_fallback_returns_abstention_without_match(self):
         self.assertEqual(extractive_fallback('量子暗号の方式は？', []), ABSTAIN)
