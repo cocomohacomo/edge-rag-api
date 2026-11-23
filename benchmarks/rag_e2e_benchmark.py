@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rag.core import Store
-from rag.answering import answer_with_pipeline, generation_budget
+from rag.answering import answer_with_pipeline, generation_budget, _missing_slots
 
 CASES = [
     {"id":"agri-01","topic":"農地転用","question":"農地の現状変更で、表土を確保する際に確認すべき基準は何ですか？","answer":"表土の確保と土壌の適正","terms":["表土","土壌","現状変更"],"source":"農地現状変更運用基準.md"},
@@ -71,7 +71,7 @@ def main():
         modes=("single","semantic_continuation")
         stats={mode:{"requests":[],"facts":0,"statuses":{},"prompt_ms":[],"generation_ms":[],
                      "prompt_tps":[],"generation_tps":[],"continuations":0,"rounds":[],
-                     "plan_covered":0,"plan_total":0} for mode in modes}
+                     "plan_covered":0,"plan_total":0,"answer_covered":0} for mode in modes}
         retrieval_hits=0
         with tempfile.TemporaryDirectory() as td:
             store=Store(Path(td)/"rag.sqlite3")
@@ -119,8 +119,10 @@ def main():
                     plan=result.get("answer_plan", {})
                     requirements=plan.get("requirements", [])
                     missing=set(plan.get("missing_requirements", []))
+                    answer_missing=set(_missing_slots(case["question"], answer, result["retrieval"].accepted))
                     mode_stats["plan_total"] += len(requirements)
                     mode_stats["plan_covered"] += sum(1 for slot in requirements if slot not in missing)
+                    mode_stats["answer_covered"] += sum(1 for slot in requirements if slot not in answer_missing)
                     rounds=result.get("generation_rounds", [])
                     round_count = len(rounds) if isinstance(rounds, list) else int(rounds or 0)
                     mode_stats["rounds"].append(round_count)
@@ -140,7 +142,7 @@ def main():
                         "fact_terms_total":len(case["terms"]),"grounded_exact_terms":ok,
                         "answer_requirements":requirements,
                         "grounded_requirements":[slot for slot in requirements if slot not in missing],
-                        "missing_requirements":sorted(missing),
+                        "missing_requirements":sorted(missing),\n                        "missing_answer_requirements":sorted(answer_missing),
                         "request_ms":round(total_ms,2),"generation_rounds":round_count,
                         "continuation_count":max(0,round_count-1),
                         "generated_tokens":sum(m["generated_tokens"] for m in call_metrics),
@@ -155,7 +157,8 @@ def main():
                     "p50":round(statistics.median(requests),2),
                     "p95":round(sorted(requests)[int(.95*(len(requests)-1))],2)},
                 "answer_fact_term_accuracy":round(st["facts"]/len(CASES),4),
-                "answer_requirement_coverage":round(st["plan_covered"]/st["plan_total"],4) if st["plan_total"] else None,
+                "evidence_requirement_coverage":round(st["plan_covered"]/st["plan_total"],4) if st["plan_total"] else None,
+                "answer_requirement_coverage":round(st["answer_covered"]/st["plan_total"],4) if st["plan_total"] else None,
                 "answer_requirement_count":st["plan_total"],
                 "answer_status_counts":st["statuses"],
                 "continuation_rate":round(st["continuations"]/len(CASES),4),
