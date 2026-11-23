@@ -31,3 +31,24 @@ python -m unittest discover -s tests -v
 
 ## 完全オフライン設計
 本アプリケーションコードから外部通信は行いません。Python実行環境やOS側の通信を含めた「外部通信ゼロ」の証明は、対象端末でファイアウォール規則・パケットキャプチャ等を用いて別途確認してください。
+
+
+## 回答制御パイプライン
+`rag.answering` は追加モデル不要の軽量な回答制御層です。
+
+- Retrieval Gate: 既存のFTS5/BM25順位に質問語彙の被覆率を加え、低関連チャンクを除外
+- Evidence-first Prompt: 根拠限定、直接回答、推測禁止、根拠不足時の棄権を明示
+- Generation Validator: 空回答、根拠語彙の不足、根拠にない数値を検出
+- Retry: 不合格時に制約を強めて最大1回だけ再生成
+- Extractive Fallback: 再生成も不合格なら質問語との一致度が高い原文文を出典付きで返す
+
+利用例:
+
+```python
+from rag.answering import answer_with_pipeline
+hits = store.search(question, 12)
+result = answer_with_pipeline(question, hits, generator=my_local_llm)
+print(result["answer"], result["status"])
+```
+
+`generator` はプロンプト文字列を受け取り回答文字列を返す関数です。LLM未接続時は省略でき、その場合も根拠抽出型回答として動作します。検証器は軽量な決定的ガードであり、意味的正しさを完全保証するものではありません。
