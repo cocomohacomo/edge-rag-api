@@ -188,8 +188,9 @@ class CoreTests(unittest.TestCase):
             return {'content': '今日は晴れです。<CONTINUE>',
                     'stopped_limit': True, 'tokens_predicted': 48, 'n_predict': 48}
         result = answer_with_pipeline('CPUのみで動く実行方式は？', hits, generator)
-        self.assertEqual(result['status'], 'extractive_fallback')
+        self.assertEqual(result['status'], 'evidence_assembled')
         self.assertEqual(len(calls), 1)
+        self.assertIn('CPU', result['answer'])
 
 
     def test_complete_sentence_with_missing_slot_uses_fallback_without_continuation(self):
