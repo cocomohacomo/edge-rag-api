@@ -106,7 +106,7 @@ def build_answer_plan(question: str, hits: Iterable[dict]) -> dict:
         for hit in sources:
             text = str(hit.get("text", ""))
             if slot == "url":
-                matched = re.findall(r"https?://[^\s<>"'、。]+", text)
+                matched = re.findall(r'https?://[^\\s<>"\\'、。]+', text)
             elif slot == "path":
                 matched = re.findall(r"(?<![A-Za-z0-9])(?:[\w.-]+/)+[\w.-]+", text)
             else:
@@ -328,6 +328,15 @@ def validate_answer(answer: str, question: str, hits: Iterable[dict], generation
     context_terms = set(japanese_terms(context))
     if not answer_terms or len(answer_terms & context_terms) / max(1, len(answer_terms)) < 0.45:
         return False, "insufficient_evidence_overlap"
+    # URLs and relative file paths are exact identifiers and must exist in evidence.
+    answer_urls = re.findall(r'https?://[^\\s<>"\\'、。]+', cleaned)
+    context_urls = set(re.findall(r'https?://[^\\s<>"\\'、。]+', context))
+    if any(value not in context_urls for value in answer_urls):
+        return False, "unsupported_url"
+    answer_paths = re.findall(r"(?<![A-Za-z0-9])(?:[\\w.-]+/)+[\\w.-]+", cleaned)
+    context_paths = set(re.findall(r"(?<![A-Za-z0-9])(?:[\\w.-]+/)+[\\w.-]+", context))
+    if any(value not in context_paths for value in answer_paths):
+        return False, "unsupported_path"
     # Numeric claims are high-risk in meeting minutes and specifications.
     numbers = re.findall(r"(?<![A-Za-z])\d+(?:[.,]\d+)?(?:%|GB|MB|日|月|年|時|分)?", cleaned, re.I)
     context_numbers = set(re.findall(r"(?<![A-Za-z])\d+(?:[.,]\d+)?(?:%|GB|MB|日|月|年|時|分)?", context, re.I))
