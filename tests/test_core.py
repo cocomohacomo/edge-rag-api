@@ -103,5 +103,25 @@ class CoreTests(unittest.TestCase):
                                          'ネットワーク要件は？', hits)[1], 'internal_tag')
 
 
+    def test_generation_budget_scales_with_question_shape(self):
+        self.assertEqual(generation_budget('期限はいつですか？'), 32)
+        self.assertEqual(generation_budget('担当者と期限を教えてください。'), 48)
+
+    def test_validator_rejects_token_limit_completion(self):
+        hits = [{'source': 'spec.md', 'text': '端末はi5-10310Uで、メモリは8GB RAM。'}]
+        ok, reason = validate_answer('端末はi5-10310Uで、メモリは', '端末とメモリは？',
+                                     hits, {'stop': False, 'tokens_predicted': 48, 'n_predict': 48})
+        self.assertFalse(ok)
+        self.assertEqual(reason, 'token_limit')
+
+    def test_pipeline_falls_back_on_truncated_generation(self):
+        hits = [{'score': .4, 'source': 'spec.md',
+                 'text': '対象端末はIntel i5-10310U。メモリ要件は8GB RAM。'}]
+        result = answer_with_pipeline('端末とメモリ要件は？', hits,
+            lambda _prompt: {'content': '対象端末はIntel i5-10310Uで、メモリは',
+                             'stop': False, 'tokens_predicted': 48, 'n_predict': 48})
+        self.assertEqual(result['status'], 'extractive_fallback')
+        self.assertIn('8GB', result['answer'])
+
 if __name__ == '__main__':
     unittest.main()
