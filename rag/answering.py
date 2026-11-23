@@ -269,6 +269,9 @@ def retrieval_gate(
 def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 1400) -> str:
     """Compact evidence-first prompt with explicit abstention and answer-shape rules."""
     hits = list(hits)
+    plan = build_answer_plan(question, hits)
+    source_order = {source: index for index, source in enumerate(plan["selected_sources"])}
+    hits = sorted(hits, key=lambda hit: source_order.get(str(hit.get("source", "unknown")), len(source_order)))
     blocks = []
     used = 0
     for i, hit in enumerate(hits, 1):
@@ -281,7 +284,6 @@ def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 
         blocks.append(block[:remaining])
         used += min(len(block), remaining)
     evidence = "\\n".join(blocks) if blocks else "（根拠なし）"
-    plan = build_answer_plan(question, hits)
     requirements = list(plan["requirements"])
     requirement_text = "、".join(requirements) if requirements else "質問の主語・条件・結論"
     plan_lines = []
