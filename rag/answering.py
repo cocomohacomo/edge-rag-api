@@ -108,7 +108,7 @@ def build_answer_plan(question: str, hits: Iterable[dict]) -> dict:
             if slot == "url":
                 matched = re.findall(r"""https?://[^\s<>"'、。]+""", text)
             elif slot == "path":
-                matched = re.findall(r"(?<![A-Za-z0-9])(?:[\w.-]+/)+[\w.-]+", text)
+                matched = re.findall(r"(?<![A-Za-z0-9./:])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+", text)
             else:
                 matched = _slot_values(slot, text)
             if matched:
@@ -169,7 +169,7 @@ def _slot_values(slot: str, evidence: str) -> list[str]:
         "quantity": r"\d+(?:[.,]\d+)?",
         "method": r"SQLite FTS5|FTS5|2-gram|BM25|n-gram|ベクトル検索|ローカル実行|CPUのみ",
         "url": r"""https?://[^\s<>"'、。]+""",
-        "path": r"(?<![A-Za-z0-9])(?:[\w.-]+/)+[\w.-]+",
+        "path": r"(?<![A-Za-z0-9./:])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+",
     }
     pattern = patterns.get(slot)
     return list(dict.fromkeys(re.findall(pattern, evidence, re.I))) if pattern else []
@@ -333,8 +333,8 @@ def validate_answer(answer: str, question: str, hits: Iterable[dict], generation
     context_urls = set(re.findall(r"""https?://[^\s<>"'、。]+""", context))
     if any(value not in context_urls for value in answer_urls):
         return False, "unsupported_url"
-    answer_paths = re.findall(r"(?<![A-Za-z0-9])(?:[\w.-]+/)+[\w.-]+", cleaned)
-    context_paths = set(re.findall(r"(?<![A-Za-z0-9])(?:[\w.-]+/)+[\w.-]+", context))
+    answer_paths = re.findall(r"(?<![A-Za-z0-9./:])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+", cleaned)
+    context_paths = set(re.findall(r"(?<![A-Za-z0-9./:])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+", context))
     if any(value not in context_paths for value in answer_paths):
         return False, "unsupported_path"
     # Numeric claims are high-risk in meeting minutes and specifications.
