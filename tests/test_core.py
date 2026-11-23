@@ -75,7 +75,7 @@ class CoreTests(unittest.TestCase):
             return '' if len(calls) == 1 else '全く関係のない回答です。'
         result = answer_with_pipeline('会議の担当者と提出期限は？', hits, broken, retry=True, continuation=False)
         self.assertEqual(len(calls), 2)
-        self.assertEqual(result['status'], 'extractive_fallback')
+        self.assertEqual(result['status'], 'evidence_assembled')
         self.assertIn('佐藤', result['answer'])
         self.assertIn('minutes.md', result['answer'])
 
