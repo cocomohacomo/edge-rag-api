@@ -115,9 +115,10 @@ def main():
                     mode_stats["statuses"][status]=mode_stats["statuses"].get(status,0)+1
                     ok=all(term.lower() in answer.lower() for term in case["terms"])
                     mode_stats["facts"] += int(ok)
-                    rounds=result.get("generation_rounds",[])
-                    mode_stats["rounds"].append(len(rounds))
-                    mode_stats["continuations"] += int(len(rounds)>1)
+                    rounds=result.get("generation_rounds", [])
+                    round_count = len(rounds) if isinstance(rounds, list) else int(rounds or 0)
+                    mode_stats["rounds"].append(round_count)
+                    mode_stats["continuations"] += int(round_count > 1)
                     for metric in call_metrics:
                         pms=metric["prompt_ms"]; gms=metric["generation_ms"]
                         pn=metric["prompt_tokens"]; gn=metric["generated_tokens"]
@@ -131,8 +132,8 @@ def main():
                         "expected_fact":case["answer"],
                         "fact_terms_found":sum(term.lower() in answer.lower() for term in case["terms"]),
                         "fact_terms_total":len(case["terms"]),"grounded_exact_terms":ok,
-                        "request_ms":round(total_ms,2),"generation_rounds":rounds,
-                        "continuation_count":max(0,len(rounds)-1),
+                        "request_ms":round(total_ms,2),"generation_rounds":round_count,
+                        "continuation_count":max(0,round_count-1),
                         "generated_tokens":sum(m["generated_tokens"] for m in call_metrics),
                         "prompt_ms":round(sum(m["prompt_ms"] for m in call_metrics),2),
                         "generation_ms":round(sum(m["generation_ms"] for m in call_metrics),2)})
