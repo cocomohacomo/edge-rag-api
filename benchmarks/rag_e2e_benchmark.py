@@ -50,7 +50,7 @@ def main():
     ap.add_argument("--server", default="llama.cpp/build/bin/llama-server")
     ap.add_argument("--threads", type=int, default=2)
     ap.add_argument("--ctx", type=int, default=2048)
-    ap.add_argument("--max-tokens", type=int, default=96)
+    ap.add_argument("--max-tokens", type=int, default=48)
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--output", default="rag-e2e-results.json")
     args=ap.parse_args()
@@ -67,61 +67,106 @@ def main():
             except Exception: time.sleep(1)
         if not ready: raise TimeoutError("llama-server readiness timeout")
         server_startup=time.perf_counter()-started
-        retrieval_ms=[]; format_ms=[]; prompt_ms=[]; generation_ms=[]; prompt_tps=[]; generation_tps=[]
-        retrieval_hits=0; grounded=0; rows=[]; statuses={}; retry_count=0; fallback_count=0; abstain_count=0
+        retrieval_ms=[]; rows=[]
+        modes=("single","semantic_continuation")
+        stats={mode:{"requests":[],"facts":0,"statuses":{},"prompt_ms":[],"generation_ms":[],
+                     "prompt_tps":[],"generation_tps":[],"continuations":0,"rounds":[]} for mode in modes}
+        retrieval_hits=0
         with tempfile.TemporaryDirectory() as td:
             store=Store(Path(td)/"rag.sqlite3")
-            for i,(name,text) in enumerate(DOCS):
-                store.add_document(Path(td)/name,text)
-            for case in CASES:
-                t=time.perf_counter(); hits=store.search(case["question"],12); retrieval_ms.append((time.perf_counter()-t)*1000)
+            for name,doc_text in DOCS:
+                store.add_document(Path(td)/name,doc_text)
+            for case_index,case in enumerate(CASES):
+                t=time.perf_counter(); hits=store.search(case["question"],12)
+                retrieval_ms.append((time.perf_counter()-t)*1000)
                 found=any(h["source"]==case["source"] for h in hits)
                 retrieval_hits += int(found)
-                call_metrics=[]
-                def generate(prompt):
-                    question=prompt.split("\nQ:",1)[-1].split("\n根拠:",1)[0]
-                    budget=generation_budget(question,args.max_tokens)
-                    response=get_json(base+"/completion",{"prompt":prompt,"n_predict":budget,"temperature":0.0,"top_k":1,"top_p":1.0,"seed":42,"cache_prompt":True},timeout=300)
-                    timings=response.get("timings",{})
-                    pms=float(timings.get("prompt_ms",0)); gms=float(timings.get("predicted_ms",0))
-                    pn=int(timings.get("prompt_n",0)); gn=int(timings.get("predicted_n",0))
-                    call_metrics.append({"prompt_ms":pms,"generation_ms":gms,"prompt_tokens":pn,"generated_tokens":gn,"stop":response.get("stop"),"n_predict":budget})
-                    return {"content":response.get("content") or "","stop":response.get("stop"),"tokens_predicted":gn,"n_predict":budget}
-                t=time.perf_counter()
-                result=answer_with_pipeline(case["question"],hits,generate,retry=False)
-                total_ms=(time.perf_counter()-t)*1000
-                format_ms.append(0.0)
-                answer=result["answer"]
-                status=result["status"]; statuses[status]=statuses.get(status,0)+1
-                retry_count += int(len(call_metrics)>1)
-                fallback_count += int(status=="extractive_fallback")
-                abstain_count += int(status=="abstained")
-                for metric in call_metrics:
-                    pms=metric["prompt_ms"]; gms=metric["generation_ms"]
-                    pn=metric["prompt_tokens"]; gn=metric["generated_tokens"]
-                    prompt_ms.append(pms); generation_ms.append(gms)
-                    if pms>0 and pn: prompt_tps.append(pn/(pms/1000))
-                    if gms>0 and gn: generation_tps.append(gn/(gms/1000))
-                pn=sum(x["prompt_tokens"] for x in call_metrics)
-                gn=sum(x["generated_tokens"] for x in call_metrics)
-                pms=sum(x["prompt_ms"] for x in call_metrics)
-                gms=sum(x["generation_ms"] for x in call_metrics)
-                selected=list(result["retrieval"].accepted)
-                ok=all(term.lower() in answer.lower() for term in case["terms"])
-                grounded += int(ok)
-                rows.append({"case":case["id"],"retrieval_hit":found,"expected_source":case["source"],
-                    "retrieved_sources":[h["source"] for h in hits[:5]],
-                    "accepted_sources":[h["source"] for h in selected],
-                    "rejected_sources":[h["source"] for h in result["retrieval"].rejected],
-                    "answer":answer,"answer_status":status,"answer_reason":result["reason"],
-                    "expected_fact":case["answer"],
-                    "fact_terms_found":sum(term.lower() in answer.lower() for term in case["terms"]),
-                    "fact_terms_total":len(case["terms"]),"grounded_exact_terms":ok,
-                    "prompt_tokens":pn,"generated_tokens":gn,"prompt_ms":round(pms,2),
-                    "generation_ms":round(gms,2),"generation_stopped":all(x.get("stop") is True for x in call_metrics) if call_metrics else None,"generation_budget":max((x.get("n_predict",0) for x in call_metrics),default=0),"request_ms":round(total_ms,2)})
+                # Alternate order to reduce systematic prompt-cache warm-up bias.
+                order=list(modes) if case_index % 2 == 0 else list(reversed(modes))
+                for mode in order:
+                    call_metrics=[]
+                    def generate(prompt):
+                        question=prompt.split("\nQ:",1)[-1].split("\n根拠:",1)[0]
+                        budget=min(24,args.max_tokens) if "[CONTINUATION]" in prompt else generation_budget(question,args.max_tokens)
+                        response=get_json(base+"/completion",{
+                            "prompt":prompt,"n_predict":budget,"temperature":0.0,
+                            "top_k":1,"top_p":1.0,"seed":42,"cache_prompt":True
+                        },timeout=300)
+                        timings=response.get("timings",{})
+                        pms=float(timings.get("prompt_ms",0)); gms=float(timings.get("predicted_ms",0))
+                        pn=int(timings.get("prompt_n",0)); gn=int(timings.get("predicted_n",0))
+                        call_metrics.append({"prompt_ms":pms,"generation_ms":gms,"prompt_tokens":pn,
+                            "generated_tokens":gn,"stop":response.get("stop"),
+                            "stopped_eos":response.get("stopped_eos"),
+                            "stopped_word":response.get("stopped_word"),
+                            "stopped_limit":response.get("stopped_limit"),"n_predict":budget})
+                        return {"content":response.get("content") or "",
+                            "stop":response.get("stop"),"stopped_eos":response.get("stopped_eos"),
+                            "stopped_word":response.get("stopped_word"),
+                            "stopped_limit":response.get("stopped_limit"),
+                            "tokens_predicted":gn,"n_predict":budget}
+                    t=time.perf_counter()
+                    result=answer_with_pipeline(case["question"],hits,generate,
+                        retry=False,continuation=(mode=="semantic_continuation"),max_continuations=2)
+                    total_ms=(time.perf_counter()-t)*1000
+                    answer=result["answer"]; status=result["status"]
+                    mode_stats=stats[mode]
+                    mode_stats["requests"].append(total_ms)
+                    mode_stats["statuses"][status]=mode_stats["statuses"].get(status,0)+1
+                    ok=all(term.lower() in answer.lower() for term in case["terms"])
+                    mode_stats["facts"] += int(ok)
+                    rounds=result.get("generation_rounds",[])
+                    mode_stats["rounds"].append(len(rounds))
+                    mode_stats["continuations"] += int(len(rounds)>1)
+                    for metric in call_metrics:
+                        pms=metric["prompt_ms"]; gms=metric["generation_ms"]
+                        pn=metric["prompt_tokens"]; gn=metric["generated_tokens"]
+                        mode_stats["prompt_ms"].append(pms); mode_stats["generation_ms"].append(gms)
+                        if pms>0 and pn: mode_stats["prompt_tps"].append(pn/(pms/1000))
+                        if gms>0 and gn: mode_stats["generation_tps"].append(gn/(gms/1000))
+                    rows.append({"mode":mode,"case":case["id"],"retrieval_hit":found,
+                        "expected_source":case["source"],"retrieved_sources":[h["source"] for h in hits[:5]],
+                        "accepted_sources":[h["source"] for h in result["retrieval"].accepted],
+                        "answer":answer,"answer_status":status,"answer_reason":result["reason"],
+                        "expected_fact":case["answer"],
+                        "fact_terms_found":sum(term.lower() in answer.lower() for term in case["terms"]),
+                        "fact_terms_total":len(case["terms"]),"grounded_exact_terms":ok,
+                        "request_ms":round(total_ms,2),"generation_rounds":rounds,
+                        "continuation_count":max(0,len(rounds)-1),
+                        "generated_tokens":sum(m["generated_tokens"] for m in call_metrics),
+                        "prompt_ms":round(sum(m["prompt_ms"] for m in call_metrics),2),
+                        "generation_ms":round(sum(m["generation_ms"] for m in call_metrics),2)})
             store.close()
+        metrics_by_mode={}
+        for mode,st in stats.items():
+            requests=st["requests"]
+            metrics_by_mode[mode]={
+                "end_to_end_request_ms":{"mean":round(statistics.mean(requests),2),
+                    "p50":round(statistics.median(requests),2),
+                    "p95":round(sorted(requests)[int(.95*(len(requests)-1))],2)},
+                "answer_fact_term_accuracy":round(st["facts"]/len(CASES),4),
+                "answer_status_counts":st["statuses"],
+                "continuation_rate":round(st["continuations"]/len(CASES),4),
+                "mean_generation_rounds":round(statistics.mean(st["rounds"]),2),
+                "prompt_processing_ms_mean":round(statistics.mean(st["prompt_ms"]),2) if st["prompt_ms"] else None,
+                "prompt_tokens_per_second_mean":round(statistics.mean(st["prompt_tps"]),2) if st["prompt_tps"] else None,
+                "generation_ms_mean":round(statistics.mean(st["generation_ms"]),2) if st["generation_ms"] else None,
+                "generation_tokens_per_second_mean":round(statistics.mean(st["generation_tps"]),2) if st["generation_tps"] else None}
         mem=proc_memory_mb(proc.pid)
-        result={"schema_version":2,"benchmark":"retrieval+RWKV7 end-to-end RAG","platform":platform.platform(),"python":platform.python_version(),"model":Path(args.model).name,"threads":args.threads,"context_tokens":args.ctx,"max_generation_tokens":args.max_tokens,"documents":len(DOCS),"queries":len(CASES),"server_startup_seconds":round(server_startup,3),"retrieval_ms":{"mean":round(statistics.mean(retrieval_ms),3),"p50":round(statistics.median(retrieval_ms),3),"p95":round(sorted(retrieval_ms)[int(.95*(len(retrieval_ms)-1))],3)},"context_format_ms_mean":round(statistics.mean(format_ms),3),"prompt_processing_ms_mean":round(statistics.mean(prompt_ms),2),"prompt_tokens_per_second_mean":round(statistics.mean(prompt_tps),2) if prompt_tps else None,"generation_ms_mean":round(statistics.mean(generation_ms),2),"generation_tokens_per_second_mean":round(statistics.mean(generation_tps),2) if generation_tps else None,"end_to_end_request_ms":{"mean":round(statistics.mean(x["request_ms"] for x in rows),2),"p50":round(statistics.median(x["request_ms"] for x in rows),2),"p95":round(sorted(x["request_ms"] for x in rows)[int(.95*(len(rows)-1))],2)},"retrieval_source_hit_rate":round(retrieval_hits/len(CASES),4),"answer_fact_term_accuracy":round(grounded/len(CASES),4),"answer_status_counts":statuses,"retry_rate":round(retry_count/len(CASES),4),"fallback_rate":round(fallback_count/len(CASES),4),"abstention_rate":round(abstain_count/len(CASES),4),"server_memory_mb":mem,"cases":rows,"limitations":["Synthetic 8-document corpus and 8 fixed questions; not a human-rated benchmark.","Fact-term match is a strict lexical proxy, not semantic correctness.","GitHub Actions runner metrics are not equivalent to the user's 8GB Intel i5-10310U machine."]}
+        result={"schema_version":3,"benchmark":"RAG single-pass vs semantic-continuation A/B",
+            "platform":platform.platform(),"python":platform.python_version(),"model":Path(args.model).name,
+            "threads":args.threads,"context_tokens":args.ctx,"initial_generation_tokens":args.max_tokens,
+            "continuation_generation_tokens":min(24,args.max_tokens),"max_continuations":2,
+            "documents":len(DOCS),"queries":len(CASES),"server_startup_seconds":round(server_startup,3),
+            "retrieval_ms":{"mean":round(statistics.mean(retrieval_ms),3),
+                "p50":round(statistics.median(retrieval_ms),3),
+                "p95":round(sorted(retrieval_ms)[int(.95*(len(retrieval_ms)-1))],3)},
+            "retrieval_source_hit_rate":round(retrieval_hits/len(CASES),4),
+            "metrics_by_mode":metrics_by_mode,"server_memory_mb":mem,"cases":rows,
+            "limitations":["Synthetic 8-document corpus and 8 fixed questions; not a human-rated benchmark.",
+                "Fact-term match is a strict lexical proxy, not semantic correctness.",
+                "GitHub Actions runner metrics are not equivalent to the user's 8GB Intel i5-10310U machine.",
+                "Both modes share one server; order alternates to reduce but cannot eliminate prompt-cache effects."]}
         Path(args.output).write_text(json.dumps(result,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
         print(json.dumps(result,ensure_ascii=False,indent=2))
     finally:
@@ -130,4 +175,6 @@ def main():
         except subprocess.TimeoutExpired: proc.kill(); proc.wait()
         child=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
         print(f"LLAMA_SERVER_CHILD_PEAK_RSS_MB={child/1024:.2f}")
+
+
 if __name__=="__main__": main()
