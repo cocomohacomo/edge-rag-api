@@ -1,0 +1,109 @@
+from __future__ import annotations
+import argparse, json, os, platform, random, statistics, subprocess, tempfile, time, urllib.request, urllib.error, resource
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from rag.core import Store
+
+CASES = [
+    {"id":"agri-01","topic":"農地転用","question":"農地の現状変更で、表土を確保する際に確認すべき基準は何ですか？","answer":"表土の確保と土壌の適正","terms":["表土","土壌","現状変更"],"source":"農地現状変更運用基準.md"},
+    {"id":"meeting-01","topic":"会議決定","question":"会議で決定した担当者と期限を教えてください。","answer":"佐藤が12月15日まで","terms":["佐藤","12月15日"],"source":"会議決定事項.md"},
+    {"id":"system-01","topic":"端末要件","question":"このシステムの想定端末とメモリ要件は何ですか？","answer":"Intel i5-10310Uと8GB RAM","terms":["i5-10310U","8GB"],"source":"端末要件.md"},
+    {"id":"rag-01","topic":"検索構成","question":"日本語文書の検索には何を使っていますか？","answer":"SQLite FTS5と日本語2-gram","terms":["SQLite FTS5","2-gram"],"source":"検索設計.md"},
+    {"id":"offline-01","topic":"配布方式","question":"配布時のネットワーク要件はどうなっていますか？","answer":"初回導入後はオフラインで動作","terms":["オフライン","ネットワーク"],"source":"オフライン配布方針.md"},
+    {"id":"audio-01","topic":"音声認識","question":"音声認識の実行方式とCPU要件を教えてください。","answer":"CPUのみでローカル実行","terms":["CPU","ローカル"],"source":"音声認識構成.md"},
+    {"id":"memory-01","topic":"メモリ制約","question":"回答生成時に重視するメモリ制約は何ですか？","answer":"8GB RAM内でモデルと検索DBを共存","terms":["8GB","検索DB"],"source":"メモリ設計.md"},
+    {"id":"index-01","topic":"索引","question":"検索インデックスはどのように構築しますか？","answer":"文書をチャンク化してFTS5に登録","terms":["チャンク","FTS5"],"source":"索引設計.md"},
+]
+DOCS = [
+("農地現状変更運用基準.md","農地の現状変更では、施工前に現況を確認し、耕作に適した表土を確保する。搬入土の品質、土壌の適正、排水性、施工後の営農可能性を確認する。表土の確保と土壌の適正を記録し、農業委員会が現地確認する。"),
+("会議決定事項.md","会議決定事項。担当者は佐藤。期限は12月15日。佐藤が12月15日までに調査結果を提出する。"),
+("端末要件.md","対象端末はWindows 11搭載のIntel i5-10310U。メモリ要件は8GB RAM。外部GPUを前提としない。"),
+("検索設計.md","日本語文書の全文検索にはSQLite FTS5を使用する。日本語テキストは2-gramに分割して索引化する。BM25と単語重複率で順位を再評価する。"),
+("オフライン配布方針.md","初回導入後はオフラインで動作する。実行時のネットワーク接続を必要としない。モデルとデータをローカルに保持する。"),
+("音声認識構成.md","音声認識はCPUのみでローカル実行する。ネットワークやGPUを必須としない。"),
+("メモリ設計.md","8GB RAM内でモデルと検索DBを共存させる。回答生成時のピークメモリを測定し、検索DBとモデルのメモリ競合を避ける。"),
+("索引設計.md","登録文書をチャンク化してFTS5に登録する。チャンクには元文書名と位置情報を保持する。"),
+]
+
+def get_json(url, payload=None, timeout=5):
+    data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode()
+    req = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json"} if data else {})
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        return json.loads(res.read().decode())
+
+def proc_memory_mb(pid):
+    try:
+        status = Path(f"/proc/{pid}/status").read_text()
+        vals = {}
+        for line in status.splitlines():
+            if line.startswith(("VmRSS:","VmHWM:")):
+                k,v = line.split(":",1); vals[k] = int(v.strip().split()[0]) / 1024
+        return vals
+    except Exception:
+        return {}
+
+def main():
+    ap=argparse.ArgumentParser()
+    ap.add_argument("--model", required=True)
+    ap.add_argument("--server", default="llama.cpp/build/bin/llama-server")
+    ap.add_argument("--threads", type=int, default=2)
+    ap.add_argument("--ctx", type=int, default=2048)
+    ap.add_argument("--max-tokens", type=int, default=96)
+    ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--output", default="rag-e2e-results.json")
+    args=ap.parse_args()
+    server=[args.server,"-m",args.model,"--host","127.0.0.1","--port",str(args.port),"-t",str(args.threads),"-c",str(args.ctx),"-ngl","0"]
+    started=time.perf_counter()
+    proc=subprocess.Popen(server,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    base=f"http://127.0.0.1:{args.port}"
+    try:
+        ready=False
+        for _ in range(180):
+            if proc.poll() is not None: raise RuntimeError(f"llama-server exited: {proc.returncode}")
+            try:
+                get_json(base+"/health",timeout=2); ready=True; break
+            except Exception: time.sleep(1)
+        if not ready: raise TimeoutError("llama-server readiness timeout")
+        server_startup=time.perf_counter()-started
+        retrieval_ms=[]; format_ms=[]; prompt_ms=[]; generation_ms=[]; prompt_tps=[]; generation_tps=[]
+        retrieval_hits=0; grounded=0; rows=[]
+        with tempfile.TemporaryDirectory() as td:
+            store=Store(Path(td)/"rag.sqlite3")
+            for i,(name,text) in enumerate(DOCS):
+                store.add_document(Path(td)/name,text)
+            for case in CASES:
+                t=time.perf_counter(); hits=store.search(case["question"],5); retrieval_ms.append((time.perf_counter()-t)*1000)
+                found=any(h["source"]==case["source"] for h in hits)
+                retrieval_hits += int(found)
+                t=time.perf_counter()
+                context="\n\n".join(f"[{i+1}] source={h['source']}\n{h['text']}" for i,h in enumerate(hits[:4]))
+                prompt=("あなたは日本語の文書QAシステムです。必ず提供された参考文書だけを根拠に回答してください。"
+                        "根拠がない場合は「文書に記載がありません」と答えてください。推測は禁止です。\n"
+                        f"質問: {case['question']}\n参考文書:\n{context}\n回答:")
+                format_ms.append((time.perf_counter()-t)*1000)
+                t=time.perf_counter()
+                response=get_json(base+"/completion",{"prompt":prompt,"n_predict":args.max_tokens,"temperature":0.0,"top_k":1,"top_p":1.0,"seed":42,"cache_prompt":False},timeout=300)
+                total_ms=(time.perf_counter()-t)*1000
+                timings=response.get("timings",{})
+                pms=float(timings.get("prompt_ms",0)); gms=float(timings.get("predicted_ms",0))
+                pn=int(timings.get("prompt_n",0)); gn=int(timings.get("predicted_n",0))
+                prompt_ms.append(pms); generation_ms.append(gms)
+                if pms>0 and pn: prompt_tps.append(pn/(pms/1000))
+                if gms>0 and gn: generation_tps.append(gn/(gms/1000))
+                answer=(response.get("content") or "").strip()
+                ok=all(term.lower() in answer.lower() for term in case["terms"])
+                grounded += int(ok)
+                rows.append({"case":case["id"],"retrieval_hit":found,"expected_source":case["source"],"retrieved_sources":[h["source"] for h in hits[:5]],"answer":answer,"expected_fact":case["answer"],"fact_terms_found":sum(term.lower() in answer.lower() for term in case["terms"]),"fact_terms_total":len(case["terms"]),"grounded_exact_terms":ok,"prompt_tokens":pn,"generated_tokens":gn,"prompt_ms":round(pms,2),"generation_ms":round(gms,2),"request_ms":round(total_ms,2)})
+            store.close()
+        mem=proc_memory_mb(proc.pid)
+        result={"schema_version":1,"benchmark":"retrieval+RWKV7 end-to-end RAG","platform":platform.platform(),"python":platform.python_version(),"model":Path(args.model).name,"threads":args.threads,"context_tokens":args.ctx,"max_generation_tokens":args.max_tokens,"documents":len(DOCS),"queries":len(CASES),"server_startup_seconds":round(server_startup,3),"retrieval_ms":{"mean":round(statistics.mean(retrieval_ms),3),"p50":round(statistics.median(retrieval_ms),3),"p95":round(sorted(retrieval_ms)[int(.95*(len(retrieval_ms)-1))],3)},"context_format_ms_mean":round(statistics.mean(format_ms),3),"prompt_processing_ms_mean":round(statistics.mean(prompt_ms),2),"prompt_tokens_per_second_mean":round(statistics.mean(prompt_tps),2) if prompt_tps else None,"generation_ms_mean":round(statistics.mean(generation_ms),2),"generation_tokens_per_second_mean":round(statistics.mean(generation_tps),2) if generation_tps else None,"end_to_end_request_ms":{"mean":round(statistics.mean(x["request_ms"] for x in rows),2),"p50":round(statistics.median(x["request_ms"] for x in rows),2),"p95":round(sorted(x["request_ms"] for x in rows)[int(.95*(len(rows)-1))],2)},"retrieval_source_hit_rate":round(retrieval_hits/len(CASES),4),"answer_fact_term_accuracy":round(grounded/len(CASES),4),"server_memory_mb":mem,"cases":rows,"limitations":["Synthetic 8-document corpus and 8 fixed questions; not a human-rated benchmark.","Fact-term match is a strict lexical proxy, not semantic correctness.","GitHub Actions runner metrics are not equivalent to the user's 8GB Intel i5-10310U machine."]}
+        Path(args.output).write_text(json.dumps(result,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+        print(json.dumps(result,ensure_ascii=False,indent=2))
+    finally:
+        proc.terminate()
+        try: proc.wait(timeout=20)
+        except subprocess.TimeoutExpired: proc.kill(); proc.wait()
+        child=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+        print(f"LLAMA_SERVER_CHILD_PEAK_RSS_MB={child/1024:.2f}")
+if __name__=="__main__": main()
