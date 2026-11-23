@@ -29,7 +29,10 @@
   },
   "llm": {
     "enabled": false,
-    "provider": "none",
-    "note": "LLM未接続時は抽出型フォールバック。接続時はrag.answering.answer_with_pipelineへgeneratorを渡す。"
+    "provider": "llama.cpp",
+    "endpoint": "http://127.0.0.1:8080",
+    "max_tokens": 96,
+    "timeout_seconds": 300,
+    "note": "enabled=trueの場合もloopbackのローカルllama.cppのみ接続。モデルサーバーは事前起動が必要。"
   }
-}\n
+}
