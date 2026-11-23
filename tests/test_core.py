@@ -110,7 +110,7 @@ class CoreTests(unittest.TestCase):
     def test_validator_rejects_token_limit_completion(self):
         hits = [{'source': 'spec.md', 'text': '端末はi5-10310Uで、メモリは8GB RAM。'}]
         ok, reason = validate_answer('端末はi5-10310Uで、メモリは', '端末とメモリは？',
-                                     hits, {'stop': False, 'tokens_predicted': 48, 'n_predict': 48})
+                                     hits, {'stopped_limit': True, 'tokens_predicted': 48, 'n_predict': 48})
         self.assertFalse(ok)
         self.assertEqual(reason, 'token_limit')
 
