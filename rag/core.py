@@ -8,7 +8,7 @@ DEFAULT_DB = ROOT / 'storage' / 'database' / 'rag.sqlite3'
 
 def japanese_terms(text: str) -> list[str]:
     """Japanese bigrams plus Latin/numeric tokens for FTS5."""
-    text = re.sub(r'\\s+', ' ', text.lower())
+    text = re.sub(r'\s+', ' ', text.lower())
     terms: list[str] = []
     for token in re.findall(r'[ぁ-んァ-ヶ一-龠ー]+|[a-z0-9_]+', text):
         if re.fullmatch(r'[ぁ-んァ-ヶ一-龠ー]+', token):
@@ -20,14 +20,14 @@ def japanese_terms(text: str) -> list[str]:
 
 
 def chunks(text: str, size: int = 420, overlap: int = 70) -> list[str]:
-    text = re.sub(r'\\r\\n?', '\\n', text).strip()
+    text = re.sub(r'\r\n?', '\n', text).strip()
     if not text:
         return []
     out, pos = [], 0
     while pos < len(text):
         end = min(len(text), pos + size)
         if end < len(text):
-            cut = max(text.rfind('\\n', pos, end), text.rfind('。', pos, end),
+            cut = max(text.rfind('\n', pos, end), text.rfind('。', pos, end),
                       text.rfind(' ', pos, end))
             if cut > pos + size // 2:
                 end = cut + 1
@@ -139,7 +139,7 @@ def extract_file(path: Path) -> str:
         except ImportError as e:
             raise RuntimeError('PDF読込にはローカル環境に pypdf が必要です。') from e
         reader = PdfReader(str(path))
-        return '\\n'.join(page.extract_text() or '' for page in reader.pages)
+        return '\n'.join(page.extract_text() or '' for page in reader.pages)
     raise ValueError(f'未対応ファイル形式: {suffix}')
 
 
@@ -153,4 +153,4 @@ def answer_from_context(question: str, hits: list[dict]) -> str:
             excerpt = excerpt[:700] + '…'
         lines.extend([f'[{i}] {hit["source"]} (関連度 {hit["score"]})', excerpt, ''])
     lines.append('※ローカル検索による根拠抜粋です。LLM未設定のため、複数箇所の統合・推論は行っていません。')
-    return '\\n'.join(lines)
+    return '\n'.join(lines)
