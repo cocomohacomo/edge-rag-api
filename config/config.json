@@ -21,9 +21,9 @@
   },
   "answering": {
     "strategy": "evidence_first",
-    "max_context_chars": 3600,
-    "max_sentences": 2,
-    "retry_count": 1,
+    "max_context_chars": 1400,
+    "max_sentences": 3,
+    "retry_count": 0,
     "extractive_fallback": true,
     "unsupported_numeric_claims": "reject"
   },
@@ -31,7 +31,7 @@
     "enabled": false,
     "provider": "llama.cpp",
     "endpoint": "http://127.0.0.1:8080",
-    "max_tokens": 96,
+    "max_tokens": 48,
     "timeout_seconds": 300,
     "note": "enabled=trueの場合もloopbackのローカルllama.cppのみ接続。モデルサーバーは事前起動が必要。"
   }
