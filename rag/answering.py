@@ -4,7 +4,10 @@ from dataclasses import dataclass
 import re
 from typing import Callable, Iterable
 
-from .core import japanese_terms
+try:
+    from .core import japanese_terms
+except ImportError:  # direct execution via rag/cli.py
+    from core import japanese_terms
 
 
 ABSTAIN = "関連する根拠が十分ではないため、回答できません。"
