@@ -86,7 +86,7 @@ def main():
                     call_metrics.append({"prompt_ms":pms,"generation_ms":gms,"prompt_tokens":pn,"generated_tokens":gn})
                     return (response.get("content") or "")
                 t=time.perf_counter()
-                result=answer_with_pipeline(case["question"],hits,generate,retry=True)
+                result=answer_with_pipeline(case["question"],hits,generate,retry=False)
                 total_ms=(time.perf_counter()-t)*1000
                 format_ms.append(0.0)
                 answer=result["answer"]
