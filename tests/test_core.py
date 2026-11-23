@@ -159,7 +159,7 @@ class CoreTests(unittest.TestCase):
     def test_continuation_marker_is_not_exposed(self):
         hits = [{'score': .4, 'source': 'offline.md',
                  'text': '初回導入後はオフラインで動作する。'}]
-        result = answer_with_pipeline('ネットワーク要件は？', hits,
+        result = answer_with_pipeline('初回導入後の動作は？', hits,
             lambda _prompt: '初回導入後はオフラインで動作します。<END_ANSWER>')
         self.assertNotIn('<END_ANSWER>', result['answer'])
         self.assertEqual(result['status'], 'generated')
