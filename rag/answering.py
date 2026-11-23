@@ -329,13 +329,16 @@ def answer_with_pipeline(
             "truncated": _is_truncated(metadata),
             "marker": marker,
         })
+        previous = accumulated
         if candidate:
             accumulated = _append_without_overlap(accumulated, candidate)
         valid, last_reason = validate_answer(accumulated, question, selected)
         missing = _missing_slots(question, accumulated, selected)
         text_complete = bool(re.search(r"[。！？!?）」』】]$", accumulated.strip()))
-        forced_continue = marker == "continue" or _is_truncated(metadata)
-        semantic_complete = valid and not missing and text_complete and marker != "continue"
+        # Completion is determined by evidence and requested-slot coverage, not
+        # by the model's marker or token-limit flag. A complete answer must not
+        # trigger another expensive inference merely because n_predict was hit.
+        semantic_complete = valid and not missing and text_complete
         if semantic_complete:
             return {"answer": accumulated.strip(), "status": "generated",
                     "reason": "semantic_completion", "retrieval": decision,
@@ -344,13 +347,14 @@ def answer_with_pipeline(
             break
         if not accumulated:
             last_reason = "empty"
-            continue
-        # Continue for truncation, explicit CONTINUE, missing requested attributes,
-        # or an unfinished sentence. Otherwise a validator rejection is terminal.
-        if not (forced_continue or missing or not text_complete):
             break
-        # Do not spend another model call when the latest round added no new text.
-        if round_index > 0 and rounds[-1]["tokens"] == 0:
+        # Continue only when the partial answer is grounded and there is a
+        # concrete completion gap. A truncation flag alone is not sufficient:
+        # invalid/unsupported answers go directly to deterministic fallback.
+        if not valid or not (missing or not text_complete or marker == "continue"):
+            break
+        # Repeated output cannot add information; stop rather than burn a round.
+        if accumulated == previous:
             break
 
     if retry and not accumulated:
