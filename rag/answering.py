@@ -440,7 +440,8 @@ def answer_with_pipeline(
     selected = list(decision.accepted)
     if generator is None:
         assembled = assemble_evidence_answer(plan)
-        if assembled:
+        assembled_valid = bool(assembled) and validate_answer(assembled, question, selected)[0]
+        if assembled_valid:
             return {"answer": assembled, "status": "evidence_assembled",
                     "reason": "all_requirements_have_direct_evidence", "retrieval": decision,
                     "generation_rounds": 0, "missing_slots": [],
@@ -521,7 +522,8 @@ def answer_with_pipeline(
                 "generation_rounds": rounds, "missing_slots": [],
                 "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
     assembled = assemble_evidence_answer(plan)
-    if assembled:
+    assembled_valid = bool(assembled) and validate_answer(assembled, question, selected)[0]
+    if assembled_valid:
         return {"answer": assembled, "status": "evidence_assembled",
                 "reason": "generation_incomplete_but_requirements_have_direct_evidence",
                 "retrieval": decision, "generation_rounds": rounds, "missing_slots": [],
