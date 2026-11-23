@@ -192,32 +192,28 @@ class CoreTests(unittest.TestCase):
 
 
     def test_complete_sentence_with_missing_slot_uses_fallback_without_continuation(self):
-        hits = [{'score': .4, 'source': 'device.md',
-                 'text': '対象端末はIntel i5-10310Uで、メモリ要件は8GB RAM。'}]
+        hits = [{'score': .4, 'source': 'minutes.md',
+                 'text': '会議の担当者は佐藤です。提出期限は後日調整する。'}]
         calls = []
         def generator(_prompt):
             calls.append(1)
-            return {'content': '対象端末はIntel i5-10310Uです。<CONTINUE>',
+            return {'content': '担当者は佐藤です。<CONTINUE>',
                     'stopped_limit': True, 'tokens_predicted': 32, 'n_predict': 32}
-        result = answer_with_pipeline('CPUとメモリ要件は？', hits, generator)
+        result = answer_with_pipeline('会議の担当者と提出期限は？', hits, generator)
         self.assertEqual(result['status'], 'extractive_fallback')
         self.assertEqual(len(calls), 1)
 
-    def test_genuinely_unfinished_grounded_answer_can_continue(self):
+    def test_unfinished_sentence_without_evidence_backed_slot_does_not_continue(self):
         hits = [{'score': .4, 'source': 'offline.md',
                  'text': '初回導入後はオフラインで動作する。'}]
         calls = []
         def generator(_prompt):
             calls.append(1)
-            if len(calls) == 1:
-                return {'content': '初回導入後はオフラインで',
-                        'stopped_limit': True, 'tokens_predicted': 24, 'n_predict': 24}
-            return {'content': '動作します。<END_ANSWER>',
-                    'stopped_eos': True, 'tokens_predicted': 6, 'n_predict': 24}
+            return {'content': '初回導入後はオフラインで',
+                    'stopped_limit': True, 'tokens_predicted': 24, 'n_predict': 24}
         result = answer_with_pipeline('初回導入後の動作は？', hits, generator)
-        self.assertEqual(result['status'], 'generated')
-        self.assertEqual(len(calls), 2)
-        self.assertIn('動作します', result['answer'])
+        self.assertEqual(result['status'], 'extractive_fallback')
+        self.assertEqual(len(calls), 1)
 
 if __name__ == '__main__':
     unittest.main()
