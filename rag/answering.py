@@ -72,15 +72,15 @@ def _required_slots(question: str) -> dict[str, re.Pattern]:
     if re.search(r"担当者|責任者|氏名|誰|だれ", q):
         slots["owner"] = re.compile(r"担当者|責任者|氏名|[一-龥]{2,4}")
     if re.search(r"期限|締切|期日|いつまで", q):
-        slots["deadline"] = re.compile(r"\\d{1,4}年|\\d{1,2}月|\\d{1,2}日|期限|締切|期日")
+        slots["deadline"] = re.compile(r"\d{1,4}年|\d{1,2}月|\d{1,2}日|期限|締切|期日")
     if re.search(r"端末|CPU|プロセッサ", q, re.I):
-        slots["device"] = re.compile(r"i[3579]-?\\d{3,5}|Windows|CPU|プロセッサ", re.I)
+        slots["device"] = re.compile(r"i[3579]-?\d{3,5}|Windows|CPU|プロセッサ", re.I)
     if re.search(r"メモリ|RAM|容量", q, re.I):
-        slots["memory"] = re.compile(r"\\d+(?:\\.\\d+)?\\s*(?:GB|MB|GiB|MiB|RAM)", re.I)
+        slots["memory"] = re.compile(r"\d+(?:\.\d+)?\s*(?:GB|MB|GiB|MiB|RAM)", re.I)
     if re.search(r"方式|方法|構成|どうやって|何を使", q):
         slots["method"] = re.compile(r"方式|方法|構成|使用|利用|実行|FTS5|2-gram|CPU|ローカル|オフライン")
     if re.search(r"何件|何人|何個|何回|何％|割合|数値|件数|人数", q):
-        slots["quantity"] = re.compile(r"\\d+(?:[.,]\\d+)?")
+        slots["quantity"] = re.compile(r"\d+(?:[.,]\d+)?")
     if re.search(r"場所|地域|住所|どこ", q):
         slots["location"] = re.compile(r"場所|地域|住所|市|町|村|県")
     return slots
@@ -88,11 +88,11 @@ def _required_slots(question: str) -> dict[str, re.Pattern]:
 
 def _slot_values(slot: str, evidence: str) -> list[str]:
     patterns = {
-        "owner": r"(?:担当者|責任者|氏名)\\s*(?:は|:|：)?\\s*([一-龥ぁ-んァ-ヶA-Za-z]{2,8})",
-        "deadline": r"(?:\\d{1,4}年)?\\d{1,2}月\\d{1,2}日|\\d{1,2}月\\d{1,2}日",
-        "device": r"i[3579]-?\\d{3,5}|Windows\\s*\\d+",
-        "memory": r"\\d+(?:\\.\\d+)?\\s*(?:GB|MB|GiB|MiB|RAM)",
-        "quantity": r"\\d+(?:[.,]\\d+)?",
+        "owner": r"(?:担当者|責任者|氏名)\s*(?:は|:|：)?\s*([一-龥ぁ-んァ-ヶA-Za-z]{2,8}?)(?:です|さん|氏|が|に|へ|を|まで|[。,.、]|$)",
+        "deadline": r"(?:\d{1,4}年)?\d{1,2}月\d{1,2}日|\d{1,2}月\d{1,2}日",
+        "device": r"i[3579]-?\d{3,5}|Windows\s*\d+",
+        "memory": r"\d+(?:\.\d+)?\s*(?:GB|MB|GiB|MiB|RAM)",
+        "quantity": r"\d+(?:[.,]\d+)?",
     }
     pattern = patterns.get(slot)
     return list(dict.fromkeys(re.findall(pattern, evidence, re.I))) if pattern else []
@@ -148,10 +148,10 @@ def _append_without_overlap(previous: str, addition: str) -> str:
 def _continuation_prompt(base_prompt: str, accumulated: str, missing: list[str]) -> str:
     return (
         base_prompt + accumulated +
-        "\\n\\n[CONTINUATION]\\n前回の回答に続けてください。既出内容を繰り返さず、"
+        "\n\n[CONTINUATION]\n前回の回答に続けてください。既出内容を繰り返さず、"
         "不足情報だけを根拠から補ってください。"
         f"未充足項目: {', '.join(missing) if missing else '文章の完結'}。"
-        f"意味的に完結したら {END_MARKER}、続きが必要なら {CONTINUE_MARKER} を末尾に付けてください。\\n"
+        f"意味的に完結したら {END_MARKER}、続きが必要なら {CONTINUE_MARKER} を末尾に付けてください。\n"
     )
 
 
