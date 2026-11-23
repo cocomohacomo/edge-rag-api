@@ -348,12 +348,15 @@ def answer_with_pipeline(
         if not accumulated:
             last_reason = "empty"
             break
-        # Continuation is reserved for a genuinely unfinished sentence.
-        # Missing slots in an otherwise complete sentence are handled by the
-        # deterministic evidence extractor: another full model call was not
-        # improving these cases in the E2E benchmark and only added latency.
-        # A CONTINUE marker or missing slot alone is not enough to spend a round.
-        if not valid or text_complete:
+        # Continue only when a requested slot is absent from the answer but
+        # its concrete value is present in retrieved evidence. A merely unfinished
+        # sentence or a model CONTINUE marker is not enough: prior E2E runs showed
+        # those cases often consumed two more rounds and still fell back.
+        evidence_text = " ".join(str(hit.get("text", "")) for hit in selected)
+        continuable_missing = [
+            slot for slot in missing if _slot_values(slot, evidence_text)
+        ]
+        if not valid or not continuable_missing:
             break
         # Repeated output cannot add information; stop rather than burn a round.
         if accumulated == previous:
