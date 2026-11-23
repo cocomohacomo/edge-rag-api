@@ -1,8 +1,35 @@
 {
   "mode": "offline",
-  "network": {"external_access": false, "model_download": false},
+  "network": {
+    "external_access": false,
+    "model_download": false
+  },
   "database": "storage/database/rag.sqlite3",
-  "chunking": {"size_chars": 420, "overlap_chars": 70},
-  "retrieval": {"top_k": 5, "strategy": "fts5_japanese_bigram_plus_overlap"},
-  "llm": {"enabled": false, "provider": "none", "note": "初版は検索根拠抜粋モード。LLM未接続。"}
-}
+  "chunking": {
+    "size_chars": 420,
+    "overlap_chars": 70
+  },
+  "retrieval": {
+    "top_k": 12,
+    "gate": {
+      "enabled": true,
+      "min_score": 0.08,
+      "min_query_overlap": 0.1,
+      "accepted_top_k": 4
+    },
+    "strategy": "fts5_japanese_bigram_bm25_plus_query_overlap"
+  },
+  "answering": {
+    "strategy": "evidence_first",
+    "max_context_chars": 3600,
+    "max_sentences": 2,
+    "retry_count": 1,
+    "extractive_fallback": true,
+    "unsupported_numeric_claims": "reject"
+  },
+  "llm": {
+    "enabled": false,
+    "provider": "none",
+    "note": "LLM未接続時は抽出型フォールバック。接続時はrag.answering.answer_with_pipelineへgeneratorを渡す。"
+  }
+}\n
