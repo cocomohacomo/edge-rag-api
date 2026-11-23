@@ -73,7 +73,7 @@ def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 
         used += min(len(block), remaining)
     evidence = "\n".join(blocks) if blocks else "（根拠なし）"
     return (
-        "日本語で回答。根拠文書に明記された事実だけを使い、質問に直接1文で答える。"
+        "日本語で回答。根拠だけを使い、根拠文書に明記された事実に基づいて質問に直接1文で答える。"
         "推測・一般論・前置きは禁止。根拠がなければ「文書に記載がありません」と答える。\n"
         f"Q:{question}\n根拠:{evidence}\nA:"
     )
