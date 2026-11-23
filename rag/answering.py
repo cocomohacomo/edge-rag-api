@@ -74,7 +74,7 @@ def _required_slots(question: str) -> dict[str, re.Pattern]:
     if re.search(r"期限|締切|期日|いつまで", q):
         slots["deadline"] = re.compile(r"\d{1,4}年|\d{1,2}月|\d{1,2}日|期限|締切|期日")
     if re.search(r"端末|CPU|プロセッサ", q, re.I):
-        slots["device"] = re.compile(r"i[3579]-?\d{3,5}|Windows|CPU|プロセッサ", re.I)
+        slots["device"] = re.compile(r"i[3579]-?\d{3,5}[A-Za-z]?|Windows|CPU|CPU|プロセッサ", re.I)
     if re.search(r"メモリ|RAM|容量", q, re.I):
         slots["memory"] = re.compile(r"\d+(?:\.\d+)?\s*(?:GB|MB|GiB|MiB|RAM)", re.I)
     if re.search(r"方式|方法|構成|どうやって|何を使", q):
@@ -195,7 +195,7 @@ def _slot_values(slot: str, evidence: str) -> list[str]:
     patterns = {
         "owner": r"(?:担当者|責任者|氏名)\s*(?:は|:|：)?\s*([一-龥ぁ-んァ-ヶA-Za-z]{2,8}?)(?:です|さん|氏|が|に|へ|を|まで|[。,.、]|$)",
         "deadline": r"(?:\d{1,4}年)?\d{1,2}月\d{1,2}日|\d{1,2}月\d{1,2}日",
-        "device": r"i[3579]-?\d{3,5}|Windows\s*\d+",
+        "device": r"i[3579]-?\d{3,5}[A-Za-z]?|Windows\s*\d+|CPU(?:のみ)?",
         "memory": r"\d+(?:\.\d+)?\s*(?:GB|MB|GiB|MiB|RAM)",
         "quantity": r"\d+(?:[.,]\d+)?",
         "method": r"SQLite FTS5|FTS5|2-gram|BM25|n-gram|ベクトル検索|ローカル実行|CPUのみ",
@@ -538,11 +538,11 @@ def answer_with_pipeline(
         evidence_terms = set(japanese_terms(evidence_text))
         overlap = len(answer_terms & evidence_terms) / max(1, len(answer_terms))
         unsupported_numbers = re.findall(
-            r"(?<![A-Za-z])\\d+(?:[.,]\\d+)?(?:%|GB|MB|日|月|年|時|分)?",
+            r"(?<![A-Za-z])\d+(?:[.,]\d+)?(?:%|GB|MB|日|月|年|時|分)?",
             accumulated, re.I
         )
         evidence_numbers = set(re.findall(
-            r"(?<![A-Za-z])\\d+(?:[.,]\\d+)?(?:%|GB|MB|日|月|年|時|分)?",
+            r"(?<![A-Za-z])\d+(?:[.,]\d+)?(?:%|GB|MB|日|月|年|時|分)?",
             evidence_text, re.I
         ))
         if overlap < 0.45 or any(value not in evidence_numbers for value in unsupported_numbers):
