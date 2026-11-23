@@ -146,6 +146,37 @@ def build_answer_plan(question: str, hits: Iterable[dict]) -> dict:
     }
 
 
+def assemble_evidence_answer(plan: dict) -> str | None:
+    """Assemble a concise answer only from values explicitly extracted from evidence."""
+    labels = {
+        "owner": "担当者", "deadline": "期限", "device": "端末",
+        "memory": "メモリ", "method": "方式", "quantity": "数量",
+        "location": "場所", "url": "URL", "path": "パス",
+    }
+    requirements = list(plan.get("requirements", []))
+    if not requirements or plan.get("missing_requirements"):
+        return None
+    lines = []
+    for slot in requirements:
+        entries = plan.get("evidence_mapping", {}).get(slot, [])
+        values = []
+        sources = []
+        for entry in entries:
+            for value in entry.get("values", []):
+                if value not in values:
+                    values.append(value)
+            source = str(entry.get("source", "")).strip()
+            if source and source not in sources:
+                sources.append(source)
+        if not values:
+            return None
+        rendered = "、".join(values[:3])
+        provenance = "、".join(sources[:2])
+        suffix = f"（出典: {provenance}）" if provenance else ""
+        lines.append(f"{labels.get(slot, slot)}: {rendered}{suffix}")
+    return "\n".join(lines) + "。"
+
+
 def build_progress_summary(plan: dict, *, validated: bool = False) -> dict:
     """UI-neutral status summary; expose only completed checks, never hidden reasoning."""
     return {
@@ -408,6 +439,12 @@ def answer_with_pipeline(
                 "answer_plan": plan, "progress": build_progress_summary(plan)}
     selected = list(decision.accepted)
     if generator is None:
+        assembled = assemble_evidence_answer(plan)
+        if assembled:
+            return {"answer": assembled, "status": "evidence_assembled",
+                    "reason": "all_requirements_have_direct_evidence", "retrieval": decision,
+                    "generation_rounds": 0, "missing_slots": [],
+                    "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
         return {"answer": extractive_fallback(question, selected), "status": "extractive_fallback",
                 "reason": "generation_unavailable", "retrieval": decision, "generation_rounds": 0,
                 "answer_plan": plan, "progress": build_progress_summary(plan)}
@@ -482,6 +519,12 @@ def answer_with_pipeline(
         return {"answer": accumulated.strip(), "status": "generated",
                 "reason": "semantic_completion", "retrieval": decision,
                 "generation_rounds": rounds, "missing_slots": [],
+                "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
+    assembled = assemble_evidence_answer(plan)
+    if assembled:
+        return {"answer": assembled, "status": "evidence_assembled",
+                "reason": "generation_incomplete_but_requirements_have_direct_evidence",
+                "retrieval": decision, "generation_rounds": rounds, "missing_slots": [],
                 "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
     fallback = extractive_fallback(question, selected, max_sentences=4)
     return {"answer": fallback, "status": "extractive_fallback",
