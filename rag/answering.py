@@ -205,7 +205,7 @@ def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 
     requirements = list(_required_slots(question))
     requirement_text = "、".join(requirements) if requirements else "質問の主語・条件・結論"
     return (
-        "日本語で回答。最初に質問を要求属性へ分解し、根拠文から各属性の値を対応付けて回答する。"
+        "日本語で回答。根拠だけを使い、最初に質問を要求属性へ分解し、根拠文から各属性の値を対応付けて回答する。"
         "要求属性は漏れなく満たすこと。複数項目は短い箇条書きまたは「、」で列挙する。"
         "根拠に明記された数値・固有名詞・URL・パスは文字列を改変せず正確に転記する。"
         "根拠にない推測、一般論、補足説明は禁止。質問文や見出しを繰り返さない。"
