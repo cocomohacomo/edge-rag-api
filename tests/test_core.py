@@ -2,8 +2,9 @@ import tempfile, unittest
 from pathlib import Path
 from rag.core import Store, chunks, japanese_terms, answer_from_context
 from rag.answering import (
-    ABSTAIN, answer_with_pipeline, build_evidence_prompt, extractive_fallback,
-    local_llama_generator, retrieval_gate, validate_answer, generation_budget,
+    ABSTAIN, answer_with_pipeline, build_evidence_prompt, build_answer_plan,
+    build_progress_summary, extractive_fallback, local_llama_generator,
+    retrieval_gate, validate_answer, generation_budget,
 )
 
 
@@ -215,6 +216,42 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result['status'], 'extractive_fallback')
         self.assertEqual(len(calls), 1)
 
+
+    def test_answer_plan_maps_required_attributes_to_source_evidence(self):
+        hits = [{
+            "score": .4, "source": "spec.md",
+            "text": "担当者は佐藤です。期限は12月15日です。URLはhttps://example.com/docs。パスはdocs/spec.mdです。"
+        }]
+        plan = build_answer_plan("担当者と期限、URL、パスは？", hits)
+        self.assertEqual(plan["requirements"], ["owner", "deadline", "url", "path"])
+        self.assertEqual(plan["missing_requirements"], [])
+        self.assertIn("佐藤", plan["evidence_mapping"]["owner"][0]["values"])
+        self.assertIn("12月15日", plan["evidence_mapping"]["deadline"][0]["values"])
+        self.assertIn("https://example.com/docs。", plan["evidence_mapping"]["url"][0]["values"][0])
+        self.assertIn("docs/spec.md", plan["evidence_mapping"]["path"][0]["values"])
+
+    def test_answer_plan_tracks_missing_evidence_without_inventing_values(self):
+        plan = build_answer_plan("担当者と期限は？", [
+            {"score": .4, "source": "minutes.md", "text": "担当者は佐藤です。"}
+        ])
+        self.assertEqual(plan["missing_requirements"], ["deadline"])
+        self.assertFalse(plan["validation"]["requirements_complete"])
+
+    def test_validator_rejects_unsupported_url_and_path(self):
+        hits = [{"source": "spec.md", "text": "URLはhttps://example.com/docs。パスはdocs/spec.mdです。"}]
+        self.assertEqual(validate_answer("URLはhttps://evil.example/docsです。", "URLは？", hits)[1],
+                         "unsupported_url")
+        self.assertEqual(validate_answer("パスはprivate/secret.txtです。", "パスは？", hits)[1],
+                         "unsupported_path")
+
+    def test_progress_summary_only_marks_validation_after_it_runs(self):
+        plan = build_answer_plan("担当者は？", [
+            {"score": .4, "source": "minutes.md", "text": "担当者は佐藤です。"}
+        ])
+        pending = build_progress_summary(plan)
+        complete = build_progress_summary(plan, validated=True)
+        self.assertFalse(pending["checks"][-1]["done"])
+        self.assertTrue(complete["checks"][-1]["done"])
 
     def test_evidence_prompt_explicitly_plans_requirements_and_preserves_identifiers(self):
         hits = [{
