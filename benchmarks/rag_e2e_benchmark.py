@@ -99,7 +99,7 @@ def main():
                             "generated_tokens":gn,"stop":response.get("stop"),
                             "stopped_eos":response.get("stopped_eos"),
                             "stopped_word":response.get("stopped_word"),
-                            "stopped_limit":response.get("stopped_limit"),"n_predict":budget})
+                            "stopped_limit":response.get("stopped_limit"),"stop_type":response.get("stop_type"),"truncated":response.get("truncated"),"n_predict":budget})
                         return {"content":response.get("content") or "",
                             "stop":response.get("stop"),"stopped_eos":response.get("stopped_eos"),
                             "stopped_word":response.get("stopped_word"),
