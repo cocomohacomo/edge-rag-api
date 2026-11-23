@@ -86,6 +86,80 @@ def _required_slots(question: str) -> dict[str, re.Pattern]:
     return slots
 
 
+def _requirement_names(question: str) -> list[str]:
+    names = list(_required_slots(question))
+    if re.search(r"URL|リンク|ウェブサイト|アドレス", question, re.I):
+        names.append("url")
+    if re.search(r"パス|ファイル名|保存先|ディレクトリ", question):
+        names.append("path")
+    return list(dict.fromkeys(names))
+
+
+def build_answer_plan(question: str, hits: Iterable[dict]) -> dict:
+    """Build a deterministic, evidence-linked answer plan without another model call."""
+    sources = list(hits)
+    requirements = _requirement_names(question)
+    q_terms = _query_terms(question)
+    mapping = {}
+    for slot in requirements:
+        candidates = []
+        for hit in sources:
+            text = str(hit.get("text", ""))
+            if slot == "url":
+                matched = re.findall(r"https?://[^\\s<>\\\"']+", text)
+            elif slot == "path":
+                matched = re.findall(r"(?<![A-Za-z0-9])(?:[\\w.-]+/)+[\\w.-]+", text)
+            else:
+                matched = _slot_values(slot, text)
+            if matched:
+                candidates.append({
+                    "source": str(hit.get("source", "unknown")),
+                    "values": list(dict.fromkeys(matched))[:4],
+                    "evidence": text[:360],
+                })
+        mapping[slot] = candidates
+    missing = [slot for slot in requirements if not mapping.get(slot)]
+    # Keep evidence ordering deterministic: requested-attribute coverage first,
+    # then lexical question overlap, then the retrieval score.
+    ranked = []
+    for index, hit in enumerate(sources):
+        text = str(hit.get("text", ""))
+        covered = sum(1 for slot in requirements if any(
+            item["source"] == str(hit.get("source", "unknown"))
+            for item in mapping.get(slot, [])
+        ))
+        lexical = len(q_terms & set(japanese_terms(text))) / max(1, len(q_terms))
+        ranked.append((covered, lexical, float(hit.get("score", 0.0)), -index, hit))
+    ranked.sort(key=lambda item: item[:4], reverse=True)
+    return {
+        "question": question,
+        "requirements": requirements,
+        "evidence_mapping": mapping,
+        "missing_requirements": missing,
+        "answer_order": requirements,
+        "selected_sources": [str(item[4].get("source", "unknown")) for item in ranked],
+        "validation": {
+            "evidence_supported": bool(sources),
+            "requirements_complete": not missing,
+            "literal_integrity": "pending",
+        },
+    }
+
+
+def build_progress_summary(plan: dict, *, validated: bool = False) -> dict:
+    """UI-neutral status summary; expose only completed checks, never hidden reasoning."""
+    return {
+        "title": "回答を整理しました",
+        "checks": [
+            {"id": "requirements", "label": "質問の要求項目を抽出", "done": True},
+            {"id": "evidence", "label": "根拠資料から該当情報を選択", "done": bool(plan.get("evidence_mapping"))},
+            {"id": "coverage", "label": "回答項目の不足を確認", "done": True},
+            {"id": "integrity", "label": "数値・URL・パスの整合性を検証", "done": validated},
+        ],
+        "missing_requirements": list(plan.get("missing_requirements", [])),
+    }
+
+
 def _slot_values(slot: str, evidence: str) -> list[str]:
     patterns = {
         "owner": r"(?:担当者|責任者|氏名)\s*(?:は|:|：)?\s*([一-龥ぁ-んァ-ヶA-Za-z]{2,8}?)(?:です|さん|氏|が|に|へ|を|まで|[。,.、]|$)",
@@ -94,6 +168,8 @@ def _slot_values(slot: str, evidence: str) -> list[str]:
         "memory": r"\d+(?:\.\d+)?\s*(?:GB|MB|GiB|MiB|RAM)",
         "quantity": r"\d+(?:[.,]\d+)?",
         "method": r"SQLite FTS5|FTS5|2-gram|BM25|n-gram|ベクトル検索|ローカル実行|CPUのみ",
+        "url": r"https?://[^\\s<>\\\"']+",
+        "path": r"(?<![A-Za-z0-9])(?:[\\w.-]+/)+[\\w.-]+",
     }
     pattern = patterns.get(slot)
     return list(dict.fromkeys(re.findall(pattern, evidence, re.I))) if pattern else []
@@ -202,8 +278,16 @@ def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 
         blocks.append(block[:remaining])
         used += min(len(block), remaining)
     evidence = "\\n".join(blocks) if blocks else "（根拠なし）"
-    requirements = list(_required_slots(question))
+    plan = build_answer_plan(question, hits)
+    requirements = list(plan["requirements"])
     requirement_text = "、".join(requirements) if requirements else "質問の主語・条件・結論"
+    plan_lines = []
+    for slot in requirements:
+        values = []
+        for item in plan["evidence_mapping"].get(slot, []):
+            values.extend(item["values"])
+        plan_lines.append(f"{slot}: {', '.join(dict.fromkeys(values)) if values else '根拠なし'}")
+    plan_text = "\\n".join(plan_lines)
     return (
         "日本語で回答。根拠だけを使い、最初に質問を要求属性へ分解し、根拠文から各属性の値を対応付けて回答する。"
         "要求属性は漏れなく満たすこと。複数項目は短い箇条書きまたは「、」で列挙する。"
@@ -211,7 +295,7 @@ def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 
         "根拠にない推測、一般論、補足説明は禁止。質問文や見出しを繰り返さない。"
         "回答が完結したら末尾に <END_ANSWER>、続きが必要なら <CONTINUE> を付ける。"
         "根拠がなければ「文書に記載がありません」と答える。\\n"
-        f"要求属性:{requirement_text}\\nQ:{question}\\n根拠:{evidence}\\nA:"
+        f"要求属性:{requirement_text}\\n回答計画:{plan_text}\\nQ:{question}\\n根拠:{evidence}\\nA:"
     )
 
 
@@ -303,13 +387,16 @@ def answer_with_pipeline(
 ) -> dict:
     """Evidence gate -> bounded semantic continuation -> validation -> extractive fallback."""
     decision = retrieval_gate(question, hits)
+    plan = build_answer_plan(question, decision.accepted)
     if not decision.accepted:
         return {"answer": ABSTAIN, "status": "abstained", "reason": decision.reason,
-                "retrieval": decision, "generation_rounds": 0}
+                "retrieval": decision, "generation_rounds": 0,
+                "answer_plan": plan, "progress": build_progress_summary(plan)}
     selected = list(decision.accepted)
     if generator is None:
         return {"answer": extractive_fallback(question, selected), "status": "extractive_fallback",
-                "reason": "generation_unavailable", "retrieval": decision, "generation_rounds": 0}
+                "reason": "generation_unavailable", "retrieval": decision, "generation_rounds": 0,
+                "answer_plan": plan, "progress": build_progress_summary(plan)}
 
     base_prompt = build_evidence_prompt(question, selected)
     accumulated = ""
@@ -346,7 +433,8 @@ def answer_with_pipeline(
         if semantic_complete:
             return {"answer": accumulated.strip(), "status": "generated",
                     "reason": "semantic_completion", "retrieval": decision,
-                    "generation_rounds": rounds, "missing_slots": []}
+                    "generation_rounds": rounds, "missing_slots": [],
+                    "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
         if not continuation or round_index + 1 >= max_rounds:
             break
         if not accumulated:
@@ -383,7 +471,8 @@ def answer_with_pipeline(
     fallback = extractive_fallback(question, selected, max_sentences=4)
     return {"answer": fallback, "status": "extractive_fallback",
             "reason": last_reason if last_reason != "accepted" else "incomplete_answer",
-            "retrieval": decision, "generation_rounds": rounds, "missing_slots": missing}
+            "retrieval": decision, "generation_rounds": rounds, "missing_slots": missing,
+            "answer_plan": plan, "progress": build_progress_summary(plan, validated=valid)}
 
 
 def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: int = 48,
