@@ -2,7 +2,7 @@ import tempfile, unittest
 from pathlib import Path
 from rag.core import Store, chunks, japanese_terms, answer_from_context
 from rag.answering import (
-    ABSTAIN, answer_with_pipeline, build_evidence_prompt, build_answer_plan,
+    ABSTAIN, answer_with_pipeline, assemble_evidence_answer, build_evidence_prompt, build_answer_plan,
     build_progress_summary, extractive_fallback, local_llama_generator,
     retrieval_gate, validate_answer, generation_budget,
 )
@@ -229,6 +229,36 @@ class CoreTests(unittest.TestCase):
         self.assertIn("12月15日", plan["evidence_mapping"]["deadline"][0]["values"])
         self.assertEqual(plan["evidence_mapping"]["url"][0]["values"][0], "https://example.com/docs")
         self.assertIn("docs/spec.md", plan["evidence_mapping"]["path"][0]["values"])
+
+    def test_evidence_assembly_builds_answer_from_all_supported_requirements(self):
+        hits = [{
+            "score": .4, "source": "minutes.md",
+            "text": "担当者は佐藤です。期限は12月15日です。URLはhttps://example.com/docs。パスはdocs/spec.mdです。"
+        }]
+        plan = build_answer_plan("担当者と期限、URL、パスは？", hits)
+        answer = assemble_evidence_answer(plan)
+        self.assertIn("担当者: 佐藤", answer)
+        self.assertIn("期限: 12月15日", answer)
+        self.assertIn("https://example.com/docs", answer)
+        self.assertIn("docs/spec.md", answer)
+        self.assertIn("minutes.md", answer)
+
+    def test_evidence_assembly_refuses_incomplete_plans(self):
+        plan = build_answer_plan("担当者と期限は？", [
+            {"score": .4, "source": "minutes.md", "text": "担当者は佐藤です。"}
+        ])
+        self.assertIsNone(assemble_evidence_answer(plan))
+
+    def test_pipeline_uses_evidence_assembly_when_generator_unavailable(self):
+        hits = [{
+            "score": .4, "source": "minutes.md",
+            "text": "担当者は佐藤です。期限は12月15日です。"
+        }]
+        result = answer_with_pipeline("会議の担当者と期限を教えてください", hits, None)
+        self.assertEqual(result["status"], "evidence_assembled")
+        self.assertIn("佐藤", result["answer"])
+        self.assertIn("12月15日", result["answer"])
+        self.assertEqual(result["generation_rounds"], 0)
 
     def test_answer_plan_tracks_missing_evidence_without_inventing_values(self):
         plan = build_answer_plan("担当者と期限は？", [
