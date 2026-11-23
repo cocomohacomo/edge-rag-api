@@ -103,8 +103,8 @@ def main():
                         return {"content":response.get("content") or "",
                             "stop":response.get("stop"),"stopped_eos":response.get("stopped_eos"),
                             "stopped_word":response.get("stopped_word"),
-                            "stopped_limit":response.get("stopped_limit"),
-                            "tokens_predicted":gn,"n_predict":budget}
+                            "stopped_limit":response.get("stopped_limit"),"stop_type":response.get("stop_type"),
+                            "truncated":response.get("truncated"),"tokens_predicted":gn,"n_predict":budget}
                     t=time.perf_counter()
                     result=answer_with_pipeline(case["question"],hits,generate,
                         retry=False,continuation=(mode=="semantic_continuation"),max_continuations=2)
