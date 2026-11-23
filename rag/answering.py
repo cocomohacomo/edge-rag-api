@@ -37,7 +37,7 @@ def retrieval_gate(
     *,
     min_score: float = 0.08,
     min_overlap: float = 0.10,
-    limit: int = 4,
+    limit: int = 3,
 ) -> RetrievalDecision:
     """Filter lexical false positives before generation; no model or embedding required."""
     ranked = []
@@ -58,7 +58,7 @@ def retrieval_gate(
     return RetrievalDecision(accepted, tuple(rejected), confidence, reason)
 
 
-def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 3600) -> str:
+def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 1400) -> str:
     """Compact evidence-first prompt with explicit abstention and answer-shape rules."""
     blocks = []
     used = 0
@@ -73,11 +73,9 @@ def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 
         used += min(len(block), remaining)
     evidence = "\n".join(blocks) if blocks else "（根拠なし）"
     return (
-        "あなたは日本語の文書質問応答エンジンです。以下の根拠だけを使用してください。\n"
-        "規則: 質問への直接回答を1〜3文で返す。根拠にない事実・数値・固有名詞を補わない。"
-        "推測や一般論を追加しない。根拠が質問に答えていない場合は「文書に記載がありません」とだけ返す。"
-        "参考文書の引用番号や無関係な文書を回答に混ぜない。\n"
-        f"質問: {question}\n根拠文書:\n{evidence}\n回答:"
+        "日本語で回答。根拠文書に明記された事実だけを使い、質問に直接1文で答える。"
+        "推測・一般論・前置きは禁止。根拠がなければ「文書に記載がありません」と答える。\n"
+        f"Q:{question}\n根拠:{evidence}\nA:"
     )
 
 
@@ -87,6 +85,10 @@ def validate_answer(answer: str, question: str, hits: Iterable[dict]) -> tuple[b
     cleaned = re.sub(r"\n?\[\d+\]\s*$", "", cleaned).strip()
     if not cleaned:
         return False, "empty"
+    if re.search(r"<\\/?(?:system_thinking|think|answer|analysis)[^>]*>", cleaned, re.I):
+        return False, "internal_tag"
+    if re.search(r"(?:質問|根拠文書|Q|A)[:：]\\s*$", cleaned):
+        return False, "incomplete_tail"
     if cleaned in {"文書に記載がありません", ABSTAIN}:
         return True, "abstention"
     sources = list(hits)
@@ -106,7 +108,7 @@ def validate_answer(answer: str, question: str, hits: Iterable[dict]) -> tuple[b
     return True, "accepted"
 
 
-def extractive_fallback(question: str, hits: Iterable[dict], max_sentences: int = 2) -> str:
+def extractive_fallback(question: str, hits: Iterable[dict], max_sentences: int = 3) -> str:
     """Return the best source sentences, preserving provenance and avoiding free-form claims."""
     candidates = []
     q_terms = set(japanese_terms(question))
@@ -138,7 +140,7 @@ def answer_with_pipeline(
     hits: Iterable[dict],
     generator: Callable[[str], str] | None = None,
     *,
-    retry: bool = True,
+    retry: bool = False,
 ) -> dict:
     """Gate -> evidence prompt -> validate -> one constrained retry -> extractive fallback."""
     decision = retrieval_gate(question, hits)
@@ -182,7 +184,7 @@ def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: i
     def generate(prompt: str) -> str:
         payload = json.dumps({
             "prompt": prompt, "n_predict": max_tokens, "temperature": 0.0,
-            "top_k": 1, "top_p": 1.0, "seed": 42, "cache_prompt": False,
+            "top_k": 1, "top_p": 1.0, "seed": 42, "cache_prompt": True,
         }, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(url, data=payload,
             headers={"Content-Type": "application/json"})
