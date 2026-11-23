@@ -168,7 +168,7 @@ def _slot_values(slot: str, evidence: str) -> list[str]:
         "memory": r"\d+(?:\.\d+)?\s*(?:GB|MB|GiB|MiB|RAM)",
         "quantity": r"\d+(?:[.,]\d+)?",
         "method": r"SQLite FTS5|FTS5|2-gram|BM25|n-gram|ベクトル検索|ローカル実行|CPUのみ",
-        "url": r"https?://[^\s<>"'、。]+",
+        "url": r"""https?://[^\s<>"'、。]+""",
         "path": r"(?<![A-Za-z0-9])(?:[\w.-]+/)+[\w.-]+",
     }
     pattern = patterns.get(slot)
