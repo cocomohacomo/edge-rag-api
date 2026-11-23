@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rag.core import Store
+from rag.answering import answer_with_pipeline
 
 CASES = [
     {"id":"agri-01","topic":"農地転用","question":"農地の現状変更で、表土を確保する際に確認すべき基準は何ですか？","answer":"表土の確保と土壌の適正","terms":["表土","土壌","現状変更"],"source":"農地現状変更運用基準.md"},
@@ -67,37 +68,58 @@ def main():
         if not ready: raise TimeoutError("llama-server readiness timeout")
         server_startup=time.perf_counter()-started
         retrieval_ms=[]; format_ms=[]; prompt_ms=[]; generation_ms=[]; prompt_tps=[]; generation_tps=[]
-        retrieval_hits=0; grounded=0; rows=[]
+        retrieval_hits=0; grounded=0; rows=[]; statuses={}; retry_count=0; fallback_count=0; abstain_count=0
         with tempfile.TemporaryDirectory() as td:
             store=Store(Path(td)/"rag.sqlite3")
             for i,(name,text) in enumerate(DOCS):
                 store.add_document(Path(td)/name,text)
             for case in CASES:
-                t=time.perf_counter(); hits=store.search(case["question"],5); retrieval_ms.append((time.perf_counter()-t)*1000)
+                t=time.perf_counter(); hits=store.search(case["question"],12); retrieval_ms.append((time.perf_counter()-t)*1000)
                 found=any(h["source"]==case["source"] for h in hits)
                 retrieval_hits += int(found)
+                call_metrics=[]
+                def generate(prompt):
+                    response=get_json(base+"/completion",{"prompt":prompt,"n_predict":args.max_tokens,"temperature":0.0,"top_k":1,"top_p":1.0,"seed":42,"cache_prompt":False},timeout=300)
+                    timings=response.get("timings",{})
+                    pms=float(timings.get("prompt_ms",0)); gms=float(timings.get("predicted_ms",0))
+                    pn=int(timings.get("prompt_n",0)); gn=int(timings.get("predicted_n",0))
+                    call_metrics.append({"prompt_ms":pms,"generation_ms":gms,"prompt_tokens":pn,"generated_tokens":gn})
+                    return (response.get("content") or "")
                 t=time.perf_counter()
-                context="\n\n".join(f"[{i+1}] source={h['source']}\n{h['text']}" for i,h in enumerate(hits[:4]))
-                prompt=("あなたは日本語の文書QAシステムです。必ず提供された参考文書だけを根拠に回答してください。"
-                        "根拠がない場合は「文書に記載がありません」と答えてください。推測は禁止です。\n"
-                        f"質問: {case['question']}\n参考文書:\n{context}\n回答:")
-                format_ms.append((time.perf_counter()-t)*1000)
-                t=time.perf_counter()
-                response=get_json(base+"/completion",{"prompt":prompt,"n_predict":args.max_tokens,"temperature":0.0,"top_k":1,"top_p":1.0,"seed":42,"cache_prompt":False},timeout=300)
+                result=answer_with_pipeline(case["question"],hits,generate,retry=True)
                 total_ms=(time.perf_counter()-t)*1000
-                timings=response.get("timings",{})
-                pms=float(timings.get("prompt_ms",0)); gms=float(timings.get("predicted_ms",0))
-                pn=int(timings.get("prompt_n",0)); gn=int(timings.get("predicted_n",0))
-                prompt_ms.append(pms); generation_ms.append(gms)
-                if pms>0 and pn: prompt_tps.append(pn/(pms/1000))
-                if gms>0 and gn: generation_tps.append(gn/(gms/1000))
-                answer=(response.get("content") or "").strip()
+                format_ms.append(0.0)
+                answer=result["answer"]
+                status=result["status"]; statuses[status]=statuses.get(status,0)+1
+                retry_count += int(len(call_metrics)>1)
+                fallback_count += int(status=="extractive_fallback")
+                abstain_count += int(status=="abstained")
+                for metric in call_metrics:
+                    pms=metric["prompt_ms"]; gms=metric["generation_ms"]
+                    pn=metric["prompt_tokens"]; gn=metric["generated_tokens"]
+                    prompt_ms.append(pms); generation_ms.append(gms)
+                    if pms>0 and pn: prompt_tps.append(pn/(pms/1000))
+                    if gms>0 and gn: generation_tps.append(gn/(gms/1000))
+                pn=sum(x["prompt_tokens"] for x in call_metrics)
+                gn=sum(x["generated_tokens"] for x in call_metrics)
+                pms=sum(x["prompt_ms"] for x in call_metrics)
+                gms=sum(x["generation_ms"] for x in call_metrics)
+                selected=list(result["retrieval"].accepted)
                 ok=all(term.lower() in answer.lower() for term in case["terms"])
                 grounded += int(ok)
-                rows.append({"case":case["id"],"retrieval_hit":found,"expected_source":case["source"],"retrieved_sources":[h["source"] for h in hits[:5]],"answer":answer,"expected_fact":case["answer"],"fact_terms_found":sum(term.lower() in answer.lower() for term in case["terms"]),"fact_terms_total":len(case["terms"]),"grounded_exact_terms":ok,"prompt_tokens":pn,"generated_tokens":gn,"prompt_ms":round(pms,2),"generation_ms":round(gms,2),"request_ms":round(total_ms,2)})
+                rows.append({"case":case["id"],"retrieval_hit":found,"expected_source":case["source"],
+                    "retrieved_sources":[h["source"] for h in hits[:5]],
+                    "accepted_sources":[h["source"] for h in selected],
+                    "rejected_sources":[h["source"] for h in result["retrieval"].rejected],
+                    "answer":answer,"answer_status":status,"answer_reason":result["reason"],
+                    "expected_fact":case["answer"],
+                    "fact_terms_found":sum(term.lower() in answer.lower() for term in case["terms"]),
+                    "fact_terms_total":len(case["terms"]),"grounded_exact_terms":ok,
+                    "prompt_tokens":pn,"generated_tokens":gn,"prompt_ms":round(pms,2),
+                    "generation_ms":round(gms,2),"request_ms":round(total_ms,2)})
             store.close()
         mem=proc_memory_mb(proc.pid)
-        result={"schema_version":1,"benchmark":"retrieval+RWKV7 end-to-end RAG","platform":platform.platform(),"python":platform.python_version(),"model":Path(args.model).name,"threads":args.threads,"context_tokens":args.ctx,"max_generation_tokens":args.max_tokens,"documents":len(DOCS),"queries":len(CASES),"server_startup_seconds":round(server_startup,3),"retrieval_ms":{"mean":round(statistics.mean(retrieval_ms),3),"p50":round(statistics.median(retrieval_ms),3),"p95":round(sorted(retrieval_ms)[int(.95*(len(retrieval_ms)-1))],3)},"context_format_ms_mean":round(statistics.mean(format_ms),3),"prompt_processing_ms_mean":round(statistics.mean(prompt_ms),2),"prompt_tokens_per_second_mean":round(statistics.mean(prompt_tps),2) if prompt_tps else None,"generation_ms_mean":round(statistics.mean(generation_ms),2),"generation_tokens_per_second_mean":round(statistics.mean(generation_tps),2) if generation_tps else None,"end_to_end_request_ms":{"mean":round(statistics.mean(x["request_ms"] for x in rows),2),"p50":round(statistics.median(x["request_ms"] for x in rows),2),"p95":round(sorted(x["request_ms"] for x in rows)[int(.95*(len(rows)-1))],2)},"retrieval_source_hit_rate":round(retrieval_hits/len(CASES),4),"answer_fact_term_accuracy":round(grounded/len(CASES),4),"server_memory_mb":mem,"cases":rows,"limitations":["Synthetic 8-document corpus and 8 fixed questions; not a human-rated benchmark.","Fact-term match is a strict lexical proxy, not semantic correctness.","GitHub Actions runner metrics are not equivalent to the user's 8GB Intel i5-10310U machine."]}
+        result={"schema_version":2,"benchmark":"retrieval+RWKV7 end-to-end RAG","platform":platform.platform(),"python":platform.python_version(),"model":Path(args.model).name,"threads":args.threads,"context_tokens":args.ctx,"max_generation_tokens":args.max_tokens,"documents":len(DOCS),"queries":len(CASES),"server_startup_seconds":round(server_startup,3),"retrieval_ms":{"mean":round(statistics.mean(retrieval_ms),3),"p50":round(statistics.median(retrieval_ms),3),"p95":round(sorted(retrieval_ms)[int(.95*(len(retrieval_ms)-1))],3)},"context_format_ms_mean":round(statistics.mean(format_ms),3),"prompt_processing_ms_mean":round(statistics.mean(prompt_ms),2),"prompt_tokens_per_second_mean":round(statistics.mean(prompt_tps),2) if prompt_tps else None,"generation_ms_mean":round(statistics.mean(generation_ms),2),"generation_tokens_per_second_mean":round(statistics.mean(generation_tps),2) if generation_tps else None,"end_to_end_request_ms":{"mean":round(statistics.mean(x["request_ms"] for x in rows),2),"p50":round(statistics.median(x["request_ms"] for x in rows),2),"p95":round(sorted(x["request_ms"] for x in rows)[int(.95*(len(rows)-1))],2)},"retrieval_source_hit_rate":round(retrieval_hits/len(CASES),4),"answer_fact_term_accuracy":round(grounded/len(CASES),4),"answer_status_counts":statuses,"retry_rate":round(retry_count/len(CASES),4),"fallback_rate":round(fallback_count/len(CASES),4),"abstention_rate":round(abstain_count/len(CASES),4),"server_memory_mb":mem,"cases":rows,"limitations":["Synthetic 8-document corpus and 8 fixed questions; not a human-rated benchmark.","Fact-term match is a strict lexical proxy, not semantic correctness.","GitHub Actions runner metrics are not equivalent to the user's 8GB Intel i5-10310U machine."]}
         Path(args.output).write_text(json.dumps(result,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
         print(json.dumps(result,ensure_ascii=False,indent=2))
     finally:
