@@ -560,7 +560,7 @@ def answer_with_pipeline(
         rounds[-1]["state"] = "continue"
         state = "continuing"
 
-    if retry and not accumulated:
+    if retry and not accumulated and state != "failed":
         try:
             raw = generator(base_prompt + "\\n根拠中の回答可能な事実だけを簡潔に回答してください。")
             candidate, _ = _generation_payload(raw)
