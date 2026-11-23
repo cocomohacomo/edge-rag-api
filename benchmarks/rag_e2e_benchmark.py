@@ -79,7 +79,9 @@ def main():
                 retrieval_hits += int(found)
                 call_metrics=[]
                 def generate(prompt):
-                    question=prompt.split("\nQ:",1)[-1].split("\n根拠:",1)[0]\n                    budget=generation_budget(question,args.max_tokens)\n                    response=get_json(base+"/completion",{"prompt":prompt,"n_predict":budget,"temperature":0.0,"top_k":1,"top_p":1.0,"seed":42,"cache_prompt":True},timeout=300)
+                    question=prompt.split("\nQ:",1)[-1].split("\n根拠:",1)[0]
+                    budget=generation_budget(question,args.max_tokens)
+                    response=get_json(base+"/completion",{"prompt":prompt,"n_predict":budget,"temperature":0.0,"top_k":1,"top_p":1.0,"seed":42,"cache_prompt":True},timeout=300)
                     timings=response.get("timings",{})
                     pms=float(timings.get("prompt_ms",0)); gms=float(timings.get("predicted_ms",0))
                     pn=int(timings.get("prompt_n",0)); gn=int(timings.get("predicted_n",0))
