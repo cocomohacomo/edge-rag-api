@@ -106,9 +106,9 @@ def build_answer_plan(question: str, hits: Iterable[dict]) -> dict:
         for hit in sources:
             text = str(hit.get("text", ""))
             if slot == "url":
-                matched = re.findall(r"https?://[^\\s<>\\\"']+", text)
+                matched = re.findall(r"https?://[^\s<>"'、。]+", text)
             elif slot == "path":
-                matched = re.findall(r"(?<![A-Za-z0-9])(?:[\\w.-]+/)+[\\w.-]+", text)
+                matched = re.findall(r"(?<![A-Za-z0-9])(?:[\w.-]+/)+[\w.-]+", text)
             else:
                 matched = _slot_values(slot, text)
             if matched:
@@ -168,8 +168,8 @@ def _slot_values(slot: str, evidence: str) -> list[str]:
         "memory": r"\d+(?:\.\d+)?\s*(?:GB|MB|GiB|MiB|RAM)",
         "quantity": r"\d+(?:[.,]\d+)?",
         "method": r"SQLite FTS5|FTS5|2-gram|BM25|n-gram|ベクトル検索|ローカル実行|CPUのみ",
-        "url": r"https?://[^\\s<>\\\"']+",
-        "path": r"(?<![A-Za-z0-9])(?:[\\w.-]+/)+[\\w.-]+",
+        "url": r"https?://[^\s<>"'、。]+",
+        "path": r"(?<![A-Za-z0-9])(?:[\w.-]+/)+[\w.-]+",
     }
     pattern = patterns.get(slot)
     return list(dict.fromkeys(re.findall(pattern, evidence, re.I))) if pattern else []
