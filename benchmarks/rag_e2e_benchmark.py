@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rag.core import Store
-from rag.answering import answer_with_pipeline
+from rag.answering import answer_with_pipeline, generation_budget
 
 CASES = [
     {"id":"agri-01","topic":"農地転用","question":"農地の現状変更で、表土を確保する際に確認すべき基準は何ですか？","answer":"表土の確保と土壌の適正","terms":["表土","土壌","現状変更"],"source":"農地現状変更運用基準.md"},
@@ -79,7 +79,7 @@ def main():
                 retrieval_hits += int(found)
                 call_metrics=[]
                 def generate(prompt):
-                    response=get_json(base+"/completion",{"prompt":prompt,"n_predict":args.max_tokens,"temperature":0.0,"top_k":1,"top_p":1.0,"seed":42,"cache_prompt":True},timeout=300)
+                    question=prompt.split("\\nQ:",1)[-1].split("\\n根拠:",1)[0]\n                    budget=generation_budget(question,args.max_tokens)\n                    response=get_json(base+"/completion",{"prompt":prompt,"n_predict":budget,"temperature":0.0,"top_k":1,"top_p":1.0,"seed":42,"cache_prompt":True},timeout=300)
                     timings=response.get("timings",{})
                     pms=float(timings.get("prompt_ms",0)); gms=float(timings.get("predicted_ms",0))
                     pn=int(timings.get("prompt_n",0)); gn=int(timings.get("predicted_n",0))
@@ -116,7 +116,7 @@ def main():
                     "fact_terms_found":sum(term.lower() in answer.lower() for term in case["terms"]),
                     "fact_terms_total":len(case["terms"]),"grounded_exact_terms":ok,
                     "prompt_tokens":pn,"generated_tokens":gn,"prompt_ms":round(pms,2),
-                    "generation_ms":round(gms,2),"request_ms":round(total_ms,2)})
+                    "generation_ms":round(gms,2),"generation_stopped":all(x.get("stop") is True for x in call_metrics) if call_metrics else None,"generation_budget":max((x.get("n_predict",0) for x in call_metrics),default=0),"request_ms":round(total_ms,2)})
             store.close()
         mem=proc_memory_mb(proc.pid)
         result={"schema_version":2,"benchmark":"retrieval+RWKV7 end-to-end RAG","platform":platform.platform(),"python":platform.python_version(),"model":Path(args.model).name,"threads":args.threads,"context_tokens":args.ctx,"max_generation_tokens":args.max_tokens,"documents":len(DOCS),"queries":len(CASES),"server_startup_seconds":round(server_startup,3),"retrieval_ms":{"mean":round(statistics.mean(retrieval_ms),3),"p50":round(statistics.median(retrieval_ms),3),"p95":round(sorted(retrieval_ms)[int(.95*(len(retrieval_ms)-1))],3)},"context_format_ms_mean":round(statistics.mean(format_ms),3),"prompt_processing_ms_mean":round(statistics.mean(prompt_ms),2),"prompt_tokens_per_second_mean":round(statistics.mean(prompt_tps),2) if prompt_tps else None,"generation_ms_mean":round(statistics.mean(generation_ms),2),"generation_tokens_per_second_mean":round(statistics.mean(generation_tps),2) if generation_tps else None,"end_to_end_request_ms":{"mean":round(statistics.mean(x["request_ms"] for x in rows),2),"p50":round(statistics.median(x["request_ms"] for x in rows),2),"p95":round(sorted(x["request_ms"] for x in rows)[int(.95*(len(rows)-1))],2)},"retrieval_source_hit_rate":round(retrieval_hits/len(CASES),4),"answer_fact_term_accuracy":round(grounded/len(CASES),4),"answer_status_counts":statuses,"retry_rate":round(retry_count/len(CASES),4),"fallback_rate":round(fallback_count/len(CASES),4),"abstention_rate":round(abstain_count/len(CASES),4),"server_memory_mb":mem,"cases":rows,"limitations":["Synthetic 8-document corpus and 8 fixed questions; not a human-rated benchmark.","Fact-term match is a strict lexical proxy, not semantic correctness.","GitHub Actions runner metrics are not equivalent to the user's 8GB Intel i5-10310U machine."]}
