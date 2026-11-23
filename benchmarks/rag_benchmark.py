@@ -46,7 +46,7 @@ def main():
         for q in range(args.queries):
             idx = rng.randrange(args.documents)
             topic, keyword, marker = expected[idx]
-            query = f"{topic} {keyword}"
+            query = f"{topic} {keyword} {marker}"
             start = time.perf_counter()
             results = store.search(query, 5)
             latencies.append((time.perf_counter() - start) * 1000)
