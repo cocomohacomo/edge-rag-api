@@ -60,7 +60,7 @@ def retrieval_gate(
     hits: Iterable[dict],
     *,
     min_score: float = 0.08,
-    min_overlap: float = 0.06,
+    min_overlap: float = 0.10,
     limit: int = 3,
 ) -> RetrievalDecision:
     """Filter lexical false positives before generation; no model or embedding required."""
@@ -74,7 +74,7 @@ def retrieval_gate(
         # A strong lexical match may rescue a borderline BM25 score. This is
         # intentionally conservative: weak overlap never passes on score alone.
         if (score >= min_score and overlap >= min_overlap) or (
-            score >= min_score * 0.65 and overlap >= max(0.18, min_overlap * 2.5)
+            score >= min_score * 0.65 and overlap >= max(0.25, min_overlap * 2.5)
         ):
             ranked.append(item)
         else:
