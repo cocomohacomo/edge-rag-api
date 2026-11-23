@@ -299,5 +299,45 @@ class CoreTests(unittest.TestCase):
         self.assertIn("文字列を改変せず正確に転記", prompt)
 
 
+    def test_generation_exception_is_recorded_without_retry_loop(self):
+        hits = [{'score': .4, 'source': 'offline.md',
+                 'text': '初回導入後はオフラインで動作する。'}]
+        calls = []
+        def broken(_prompt):
+            calls.append(1)
+            raise TimeoutError("local model timed out")
+        result = answer_with_pipeline('初回導入後の動作は？', hits, broken,
+                                      continuation=True, max_continuations=2,
+                                      prefer_evidence_assembly=False)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result['status'], 'extractive_fallback')
+        self.assertEqual(result['generation_rounds'][0]['state'], 'generation_error')
+        self.assertEqual(result['reason'], 'generation_error')
+
+    def test_generation_loop_records_grounded_continuation_states(self):
+        hits = [{'score': .4, 'source': 'minutes.md',
+                 'text': '会議の担当者は佐藤です。提出期限は12月15日です。'}]
+        calls = []
+        def generator(_prompt):
+            calls.append(1)
+            if len(calls) == 1:
+                return {'content': '担当者は佐藤です。<CONTINUE>',
+                        'stopped_limit': True, 'tokens_predicted': 48, 'n_predict': 48}
+            return {'content': '提出期限は12月15日です。<END_ANSWER>',
+                    'stop': True, 'tokens_predicted': 12, 'n_predict': 24}
+        result = answer_with_pipeline('会議の担当者と提出期限は？', hits, generator,
+                                      prefer_evidence_assembly=False)
+        self.assertEqual(result['status'], 'generated')
+        self.assertEqual([r['state'] for r in result['generation_rounds']],
+                         ['continue', 'completed'])
+        self.assertTrue(result['generation_rounds'][0]['truncated'])
+
+    def test_device_slot_preserves_cpu_model_suffix(self):
+        hits = [{'score': .4, 'source': 'spec.md',
+                 'text': '対象端末のCPUはIntel i5-10310U。'}]
+        plan = build_answer_plan('対象端末のCPUは？', hits)
+        self.assertIn('i5-10310U', plan['evidence_mapping']['device'][0]['values'])
+
+
 if __name__ == '__main__':
     unittest.main()
