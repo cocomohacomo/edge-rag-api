@@ -61,7 +61,7 @@ def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 
     blocks = []
     used = 0
     for i, hit in enumerate(hits, 1):
-        text = re.sub(r"\\s+", " ", str(hit.get("text", ""))).strip()
+        text = re.sub(r"\s+", " ", str(hit.get("text", ""))).strip()
         source = str(hit.get("source", "unknown"))
         block = f"[根拠{i}] {source}: {text}"
         remaining = max_chars - used
@@ -69,20 +69,20 @@ def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 
             break
         blocks.append(block[:remaining])
         used += min(len(block), remaining)
-    evidence = "\\n".join(blocks) if blocks else "（根拠なし）"
+    evidence = "\n".join(blocks) if blocks else "（根拠なし）"
     return (
-        "あなたは日本語の文書質問応答エンジンです。以下の根拠だけを使用してください。\\n"
+        "あなたは日本語の文書質問応答エンジンです。以下の根拠だけを使用してください。\n"
         "規則: 質問への直接回答を1〜3文で返す。根拠にない事実・数値・固有名詞を補わない。"
         "推測や一般論を追加しない。根拠が質問に答えていない場合は「文書に記載がありません」とだけ返す。"
-        "参考文書の引用番号や無関係な文書を回答に混ぜない。\\n"
-        f"質問: {question}\\n根拠文書:\\n{evidence}\\n回答:"
+        "参考文書の引用番号や無関係な文書を回答に混ぜない。\n"
+        f"質問: {question}\n根拠文書:\n{evidence}\n回答:"
     )
 
 
 def validate_answer(answer: str, question: str, hits: Iterable[dict]) -> tuple[bool, str]:
     """Conservative deterministic guard against empty, off-topic and unsupported numeric output."""
-    cleaned = re.sub(r"^回答[:：]?\\s*", "", (answer or "").strip())
-    cleaned = re.sub(r"\\n?\\[\\d+\\]\\s*$", "", cleaned).strip()
+    cleaned = re.sub(r"^回答[:：]?\s*", "", (answer or "").strip())
+    cleaned = re.sub(r"\n?\[\d+\]\s*$", "", cleaned).strip()
     if not cleaned:
         return False, "empty"
     if cleaned in {"文書に記載がありません", ABSTAIN}:
@@ -94,8 +94,8 @@ def validate_answer(answer: str, question: str, hits: Iterable[dict]) -> tuple[b
     if not answer_terms or len(answer_terms & context_terms) / max(1, len(answer_terms)) < 0.45:
         return False, "insufficient_evidence_overlap"
     # Numeric claims are high-risk in meeting minutes and specifications.
-    numbers = re.findall(r"(?<![A-Za-z])\\d+(?:[.,]\\d+)?(?:%|GB|MB|日|月|年|時|分)?", cleaned, re.I)
-    context_numbers = set(re.findall(r"(?<![A-Za-z])\\d+(?:[.,]\\d+)?(?:%|GB|MB|日|月|年|時|分)?", context, re.I))
+    numbers = re.findall(r"(?<![A-Za-z])\d+(?:[.,]\d+)?(?:%|GB|MB|日|月|年|時|分)?", cleaned, re.I)
+    context_numbers = set(re.findall(r"(?<![A-Za-z])\d+(?:[.,]\d+)?(?:%|GB|MB|日|月|年|時|分)?", context, re.I))
     if any(n not in context_numbers for n in numbers):
         return False, "unsupported_number"
     q_terms = set(japanese_terms(question))
@@ -110,7 +110,7 @@ def extractive_fallback(question: str, hits: Iterable[dict], max_sentences: int 
     q_terms = set(japanese_terms(question))
     for hit in hits:
         text = str(hit.get("text", "")).strip()
-        for sentence in re.split(r"(?<=[。！？!?])\\s*|\\n+", text):
+        for sentence in re.split(r"(?<=[。！？!?])\s*|\n+", text):
             sentence = sentence.strip()
             if not sentence:
                 continue
@@ -128,7 +128,7 @@ def extractive_fallback(question: str, hits: Iterable[dict], max_sentences: int 
         selected.append(f"{sentence}（出典: {source}）")
         if len(selected) >= max_sentences:
             break
-    return "\\n".join(selected) if selected else ABSTAIN
+    return "\n".join(selected) if selected else ABSTAIN
 
 
 def answer_with_pipeline(
@@ -155,7 +155,7 @@ def answer_with_pipeline(
             return {"answer": candidate.strip(), "status": "generated", "reason": "accepted",
                     "retrieval": decision}
         if retry:
-            retry_prompt = prompt + "\\n直前の回答は検証に失敗しました。根拠中の回答可能な事実だけを1文で回答してください。"
+            retry_prompt = prompt + "\n直前の回答は検証に失敗しました。根拠中の回答可能な事実だけを1文で回答してください。"
             try:
                 candidate = generator(retry_prompt)
             except Exception:
