@@ -35,7 +35,7 @@ class CoreTests(unittest.TestCase):
             {'score': .3, 'source': 'index.md', 'text': '文書をチャンク化してFTS5に登録する。'},
             {'score': .2, 'source': 'offline.md', 'text': '初回導入後はオフラインで動作する。'},
         ]
-        decision = retrieval_gate('検索インデックスの構築方法は？', hits)
+        decision = retrieval_gate('文書をチャンク化してFTS5に登録する方法は？', hits)
         self.assertEqual([h['source'] for h in decision.accepted], ['index.md'])
         self.assertEqual([h['source'] for h in decision.rejected], ['offline.md'])
 
