@@ -72,7 +72,7 @@ class CoreTests(unittest.TestCase):
         def broken(_prompt):
             calls.append(1)
             return '' if len(calls) == 1 else '全く関係のない回答です。'
-        result = answer_with_pipeline('会議の担当者と提出期限は？', hits, broken)
+        result = answer_with_pipeline('会議の担当者と提出期限は？', hits, broken, retry=True)
         self.assertEqual(len(calls), 2)
         self.assertEqual(result['status'], 'extractive_fallback')
         self.assertIn('佐藤', result['answer'])
@@ -87,6 +87,20 @@ class CoreTests(unittest.TestCase):
 
     def test_extractive_fallback_returns_abstention_without_match(self):
         self.assertEqual(extractive_fallback('量子暗号の方式は？', []), ABSTAIN)
+
+    def test_pipeline_defaults_to_single_generation_attempt(self):
+        hits = [{'score': .4, 'source': 'minutes.md',
+                 'text': '会議の担当者は佐藤です。提出期限は12月15日です。'}]
+        calls = []
+        result = answer_with_pipeline('会議の担当者と提出期限は？', hits,
+                                      lambda _prompt: calls.append(1) or '')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result['status'], 'extractive_fallback')
+
+    def test_validator_rejects_internal_model_tags(self):
+        hits = [{'source': 'offline.md', 'text': '初回導入後はオフラインで動作する。'}]
+        self.assertEqual(validate_answer('</system_thinking> オフラインで動作します。',
+                                         'ネットワーク要件は？', hits)[1], 'internal_tag')
 
 
 if __name__ == '__main__':
