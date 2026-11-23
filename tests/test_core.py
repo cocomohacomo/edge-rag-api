@@ -308,7 +308,7 @@ class CoreTests(unittest.TestCase):
             calls.append(1)
             raise TimeoutError("local model timed out")
         result = answer_with_pipeline('初回導入後の動作は？', hits, broken,
-                                      continuation=True, max_continuations=2,
+                                      retry=True, continuation=True, max_continuations=2,
                                       prefer_evidence_assembly=False)
         self.assertEqual(len(calls), 1)
         self.assertEqual(result['status'], 'extractive_fallback')
