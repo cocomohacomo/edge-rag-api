@@ -348,10 +348,12 @@ def answer_with_pipeline(
         if not accumulated:
             last_reason = "empty"
             break
-        # Continue only when the partial answer is grounded and there is a
-        # concrete completion gap. A truncation flag alone is not sufficient:
-        # invalid/unsupported answers go directly to deterministic fallback.
-        if not valid or not (missing or not text_complete or marker == "continue"):
+        # Continuation is reserved for a genuinely unfinished sentence.
+        # Missing slots in an otherwise complete sentence are handled by the
+        # deterministic evidence extractor: another full model call was not
+        # improving these cases in the E2E benchmark and only added latency.
+        # A CONTINUE marker or missing slot alone is not enough to spend a round.
+        if not valid or text_complete:
             break
         # Repeated output cannot add information; stop rather than burn a round.
         if accumulated == previous:
