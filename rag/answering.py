@@ -151,7 +151,7 @@ def extractive_fallback(question: str, hits: Iterable[dict], max_sentences: int 
     q_terms = _query_terms(question)
     attribute_patterns = {
         "担当者": r"担当者|氏名|責任者", "期限": r"期限|締切|期日|まで",
-        "数値": r"\\d+(?:月|日|年|GB|MB|%)?", "方式": r"方式|方法|構成|手段",
+        "数値": r"\d+(?:月|日|年|GB|MB|%)?", "方式": r"方式|方法|構成|手段",
         "要件": r"要件|条件|必要|対象", "場所": r"場所|地域|住所",
     }
     requested = [name for name, pattern in attribute_patterns.items()
@@ -166,7 +166,7 @@ def extractive_fallback(question: str, hits: Iterable[dict], max_sentences: int 
             coverage = len(q_terms & terms) / max(1, len(q_terms))
             attribute_hits = sum(
                 1 for name in requested
-                if (name == "数値" and re.search(r"\\d", sentence)) or
+                if (name == "数値" and re.search(r"\d", sentence)) or
                    (name != "数値" and re.search(attribute_patterns[name], sentence))
             )
             score = coverage + 0.20 * attribute_hits
@@ -233,8 +233,8 @@ def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: i
         raise ValueError("LLM endpoint must be a local HTTP loopback address")
     url = endpoint.rstrip("/") + "/completion"
 
-    def generate(prompt: str) -> str:
-        question = prompt.split("\\nQ:", 1)[-1].split("\\n根拠:", 1)[0]
+    def generate(prompt: str) -> dict:
+        question = prompt.split("\nQ:", 1)[-1].split("\n根拠:", 1)[0]
         budget = generation_budget(question, max_tokens)
         payload = json.dumps({
             "prompt": prompt, "n_predict": budget, "temperature": 0.0,
