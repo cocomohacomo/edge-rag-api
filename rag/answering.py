@@ -552,7 +552,7 @@ def answer_with_pipeline(
 
         # Missing evidence-backed slots take priority. Otherwise continue only
         # when the model explicitly requested continuation or hit its token cap.
-        should_continue = bool(continuable_missing) or marker == "continue" or truncated
+        should_continue = bool(continuable_missing) or (marker == "continue" and not text_complete)
         if not should_continue:
             rounds[-1]["state"] = "model_finished"
             state = "finished_incomplete"
@@ -568,7 +568,9 @@ def answer_with_pipeline(
             accumulated = candidate
         except Exception:
             pass
-    valid, last_reason = validate_answer(accumulated, question, selected)
+    valid, validation_reason = validate_answer(accumulated, question, selected)
+    if state != "failed":
+        last_reason = validation_reason
     missing = _missing_slots(question, accumulated, selected)
     if valid and not missing and re.search(r"[。！？!?）」』】]$", accumulated.strip()):
         return {"answer": accumulated.strip(), "status": "generated",
