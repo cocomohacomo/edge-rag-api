@@ -201,13 +201,17 @@ def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 
             break
         blocks.append(block[:remaining])
         used += min(len(block), remaining)
-    evidence = "\n".join(blocks) if blocks else "（根拠なし）"
+    evidence = "\\n".join(blocks) if blocks else "（根拠なし）"
+    requirements = list(_required_slots(question))
+    requirement_text = "、".join(requirements) if requirements else "質問の主語・条件・結論"
     return (
-        "日本語で回答。根拠だけを使い、質問が求める属性を漏れなく簡潔に回答する。"
-        "複数項目は「、」で列挙し、質問文や見出しを繰り返さない。推測・一般論は禁止。"
+        "日本語で回答。最初に質問を要求属性へ分解し、根拠文から各属性の値を対応付けて回答する。"
+        "要求属性は漏れなく満たすこと。複数項目は短い箇条書きまたは「、」で列挙する。"
+        "根拠に明記された数値・固有名詞・URL・パスは文字列を改変せず正確に転記する。"
+        "根拠にない推測、一般論、補足説明は禁止。質問文や見出しを繰り返さない。"
         "回答が完結したら末尾に <END_ANSWER>、続きが必要なら <CONTINUE> を付ける。"
-        "根拠がなければ「文書に記載がありません」と答える。\n"
-        f"Q:{question}\n根拠:{evidence}\nA:"
+        "根拠がなければ「文書に記載がありません」と答える。\\n"
+        f"要求属性:{requirement_text}\\nQ:{question}\\n根拠:{evidence}\\nA:"
     )
 
 
