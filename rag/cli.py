@@ -40,12 +40,12 @@ def main():
             ingest(store, [Path(x) for x in args.paths])
         elif args.cmd == 'search':
             for hit in store.search(args.query, max(1, min(args.limit, 20))):
-                print(f'[{hit["score"]}] {hit["source"]}\\n{hit["text"]}\\n')
+                print(f'[{hit["score"]}] {hit["source"]}\n{hit["text"]}\n')
         else:
             print('Edge RAG / offline prototype. 終了: /exit')
             while True:
                 try:
-                    q = input('\\n質問> ').strip()
+                    q = input('\n質問> ').strip()
                 except (EOFError, KeyboardInterrupt):
                     print()
                     break
@@ -57,7 +57,7 @@ def main():
                 answer = answer_from_context(q, hits)
                 store.log('user', q)
                 store.log('assistant', answer)
-                print('\\n' + answer)
+                print('\n' + answer)
     finally:
         store.close()
 
