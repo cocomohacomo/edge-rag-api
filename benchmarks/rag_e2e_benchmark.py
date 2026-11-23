@@ -83,8 +83,8 @@ def main():
                     timings=response.get("timings",{})
                     pms=float(timings.get("prompt_ms",0)); gms=float(timings.get("predicted_ms",0))
                     pn=int(timings.get("prompt_n",0)); gn=int(timings.get("predicted_n",0))
-                    call_metrics.append({"prompt_ms":pms,"generation_ms":gms,"prompt_tokens":pn,"generated_tokens":gn})
-                    return (response.get("content") or "")
+                    call_metrics.append({"prompt_ms":pms,"generation_ms":gms,"prompt_tokens":pn,"generated_tokens":gn,"stop":response.get("stop"),"n_predict":budget})
+                    return {"content":response.get("content") or "","stop":response.get("stop"),"tokens_predicted":gn,"n_predict":budget}
                 t=time.perf_counter()
                 result=answer_with_pipeline(case["question"],hits,generate,retry=False)
                 total_ms=(time.perf_counter()-t)*1000
