@@ -1,8 +1,8 @@
 from __future__ import annotations
-import argparse, sys
+import argparse, sys, json
 from pathlib import Path
 from core import Store, extract_file
-from answering import answer_with_pipeline
+from answering import answer_with_pipeline, local_llama_generator
 
 
 def ingest(store: Store, paths: list[Path]) -> int:
@@ -35,6 +35,15 @@ def main():
     p.add_argument('-n', '--limit', type=int, default=5)
     sub.add_parser('chat', help='対話モード')
     args = ap.parse_args()
+    config_path = Path(__file__).resolve().parents[1] / 'config' / 'config.json'
+    config = json.loads(config_path.read_text(encoding='utf-8')) if config_path.exists() else {}
+    llm = config.get('llm', {})
+    generator = None
+    if llm.get('enabled'):
+        if llm.get('provider') != 'llama.cpp':
+            raise SystemExit('未対応LLM providerです。llama.cppのみ利用できます。')
+        generator = local_llama_generator(llm.get('endpoint', 'http://127.0.0.1:8080'),
+            int(llm.get('max_tokens', 96)), int(llm.get('timeout_seconds', 300)))
     store = Store()
     try:
         if args.cmd == 'ingest':
@@ -55,7 +64,7 @@ def main():
                 if not q:
                     continue
                 hits = store.search(q, 12)
-                result = answer_with_pipeline(q, hits)
+                result = answer_with_pipeline(q, hits, generator)
                 answer = result["answer"]
                 store.log('user', q)
                 store.log('assistant', answer)
