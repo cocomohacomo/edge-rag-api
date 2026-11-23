@@ -85,9 +85,9 @@ def validate_answer(answer: str, question: str, hits: Iterable[dict]) -> tuple[b
     cleaned = re.sub(r"\n?\[\d+\]\s*$", "", cleaned).strip()
     if not cleaned:
         return False, "empty"
-    if re.search(r"<\\/?(?:system_thinking|think|answer|analysis)[^>]*>", cleaned, re.I):
+    if re.search(r"</?(?:system_thinking|think|answer|analysis)[^>]*>", cleaned, re.I):
         return False, "internal_tag"
-    if re.search(r"(?:質問|根拠文書|Q|A)[:：]\\s*$", cleaned):
+    if re.search(r"(?:質問|根拠文書|Q|A)[:：]\s*$", cleaned):
         return False, "incomplete_tail"
     if cleaned in {"文書に記載がありません", ABSTAIN}:
         return True, "abstention"
