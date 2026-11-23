@@ -3,7 +3,7 @@ from pathlib import Path
 from rag.core import Store, chunks, japanese_terms, answer_from_context
 from rag.answering import (
     ABSTAIN, answer_with_pipeline, build_evidence_prompt, extractive_fallback,
-    local_llama_generator, retrieval_gate, validate_answer,
+    local_llama_generator, retrieval_gate, validate_answer, generation_budget,
 )
 
 
