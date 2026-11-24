@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rag.core import Store
 from rag.answering import answer_with_pipeline, generation_budget, _missing_slots, _missing_relations
+from rag.retrieval_v2 import search_with_diagnostics
 
 CASES = [
     {"id":"agri-01","topic":"農地転用","question":"農地の現状変更で、表土を確保する際に確認すべき基準は何ですか？","answer":"表土の確保と土壌の適正","terms":["表土","土壌","現状変更"],"source":"農地現状変更運用基準.md"},
@@ -79,7 +80,7 @@ def main():
             for name,doc_text in DOCS:
                 store.add_document(Path(td)/name,doc_text)
             for case_index,case in enumerate(CASES):
-                t=time.perf_counter(); hits=store.search(case["question"],12)
+                t=time.perf_counter(); hits,retrieval_diag=search_with_diagnostics(store,case["question"],12)
                 retrieval_ms.append((time.perf_counter()-t)*1000)
                 found=any(h["source"]==case["source"] for h in hits)
                 retrieval_hits += int(found)
@@ -141,6 +142,7 @@ def main():
                         if gms>0 and gn: mode_stats["generation_tps"].append(gn/(gms/1000))
                     rows.append({"mode":mode,"case":case["id"],"retrieval_hit":found,
                         "expected_source":case["source"],"retrieved_sources":[h["source"] for h in hits[:5]],
+                        "retrieval_diagnostics":retrieval_diag,
                         "accepted_sources":[h["source"] for h in result["retrieval"].accepted],
                         "answer":answer,"answer_status":status,"answer_reason":result["reason"],
                         "expected_fact":case["answer"],
@@ -190,6 +192,7 @@ def main():
                 "p50":round(statistics.median(retrieval_ms),3),
                 "p95":round(sorted(retrieval_ms)[int(.95*(len(retrieval_ms)-1))],3)},
             "retrieval_source_hit_rate":round(retrieval_hits/len(CASES),4),
+            "retrieval_channel_candidate_counts":{key:sum(int(row.get("retrieval_diagnostics",{}).get("channels",{}).get(key,{}).get("candidate_count",0)) for row in rows if row["mode"]=="single") for key in ("fts5_bm25","bigram","exact_match")},
             "metrics_by_mode":metrics_by_mode,"server_memory_mb":mem,"cases":rows,
             "limitations":["Synthetic 8-document corpus and 8 fixed questions; not a human-rated benchmark.",
                 "Fact-term match is a strict lexical proxy, not semantic correctness.",
