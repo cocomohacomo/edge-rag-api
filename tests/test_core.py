@@ -297,8 +297,7 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(complete["checks"][-1]["done"])
 
     def test_evidence_prompt_explicitly_plans_requirements_and_preserves_identifiers(self):
-        hits = [{
-            "source": "spec.md",
+        hits = [{            "source": "spec.md",
             "text": "担当者は佐藤です。期限は12月15日です。URLはhttps://example.com/docs。パスはdocs/spec.mdです。"
         }]
         prompt = build_evidence_prompt("担当者と期限、URL、パスは？", hits)
@@ -415,6 +414,55 @@ class CoreTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "evidence_assembled")
         self.assertEqual(calls, [])
+
+
+    def test_forced_generation_does_not_hide_incomplete_output_with_assembly(self):
+        hits = [{'score': .9, 'source': 'minutes.md',
+                 'text': '会議の担当者は佐藤です。提出期限は12月15日です。'}]
+        result = answer_with_pipeline(
+            '会議の担当者と提出期限は？', hits,
+            lambda _prompt: {'content': '担当者は佐藤です。<CONTINUE>',
+                             'stop': True, 'tokens_predicted': 12, 'n_predict': 48},
+            continuation=False, force_generation=True,
+        )
+        self.assertEqual(result['status'], 'generation_incomplete')
+        self.assertEqual(result['reason'], 'requirements_incomplete')
+        self.assertIn('佐藤', result['answer'])
+        self.assertNotIn('12月15日', result['answer'])
+
+    def test_forced_generation_reports_generation_error_without_assembly(self):
+        hits = [{'score': .9, 'source': 'offline.md',
+                 'text': '初回導入後はオフラインで動作する。'}]
+        def broken(_prompt):
+            raise TimeoutError('local model timed out')
+        result = answer_with_pipeline(
+            '初回導入後の動作は？', hits, broken,
+            force_generation=True,
+        )
+        self.assertEqual(result['status'], 'generation_error')
+        self.assertEqual(result['reason'], 'generation_error')
+
+    def test_grounded_eos_without_punctuation_gets_one_completion_round(self):
+        hits = [{'score': .9, 'source': 'offline.md',
+                 'text': '初回導入後はオフラインで動作する。'}]
+        calls = []
+        def generator(prompt):
+            calls.append(prompt)
+            if len(calls) == 1:
+                return {'content': '初回導入後はオフラインで動作します',
+                        'stop': True, 'stop_type': 'eos',
+                        'tokens_predicted': 10, 'n_predict': 32}
+            return {'content': '。<END_ANSWER>', 'stop': True,
+                    'stop_type': 'eos', 'tokens_predicted': 2, 'n_predict': 24}
+        result = answer_with_pipeline(
+            '初回導入後の動作は？', hits, generator,
+            continuation=True, max_continuations=1,
+            force_generation=True,
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(result['status'], 'generated')
+        self.assertIn('オフラインで動作します。', result['answer'])
+        self.assertEqual(result['generation_rounds'][-1]['state'], 'completed')
 
 
 if __name__ == '__main__':
