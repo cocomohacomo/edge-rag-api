@@ -702,7 +702,7 @@ def answer_with_pipeline(
             return {"answer": accumulated.strip(), "status": "generated",
                     "reason": "semantic_completion", "retrieval": decision,
                     "generation_rounds": rounds, "missing_slots": [],
-                    "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
+                    "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "progress": build_progress_summary(plan, validated=True)}
 
         if not continuation or round_index + 1 >= max_rounds:
             rounds[-1]["state"] = "round_limit" if round_index + 1 >= max_rounds else "single_pass"
@@ -767,7 +767,7 @@ def answer_with_pipeline(
         return {"answer": ABSTAIN, "status": "generation_contaminated",
                 "reason": last_reason, "retrieval": decision,
                 "generation_rounds": rounds, "missing_slots": [],
-                "answer_plan": plan, "progress": build_progress_summary(plan, validated=False)}
+                "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "progress": build_progress_summary(plan, validated=False)}
 
     if retry and not accumulated and state not in {"failed", "contaminated", "rejected"}:
         try:

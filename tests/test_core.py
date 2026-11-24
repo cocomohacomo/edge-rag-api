@@ -611,3 +611,45 @@ class EvidenceLedgerArchitectureTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(result["status"], "generated")
         self.assertIn("Evidence", calls[0]) if "Evidence" in calls[0] else self.assertIn("EVIDENCE_LEDGER_JSON", calls[0])
+\n\nclass AttributeBindingArchitectureTests(unittest.TestCase):
+    def test_attribute_binding_keeps_exact_source_offsets_and_quote(self):
+        from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger
+        hits = [{"source": "minutes.md", "text": "会議の担当者は佐藤です。提出期限は12月15日です。"}]
+        plan = build_answer_plan("会議の担当者と提出期限は？", hits)
+        ledger = build_attribute_ledger(plan, hits)
+        owner = next(x for x in ledger["attributes"] if x["attribute"] == "owner")
+        binding = owner["bindings"][0]
+        self.assertEqual(hits[0]["text"][binding["start"]:binding["end"]], binding["quote"])
+        self.assertEqual(binding["value"], "佐藤")
+        self.assertEqual(validate_attribute_ledger(ledger)["supported"], ["owner", "deadline"])
+
+    def test_attribute_validator_marks_conflicting_values(self):
+        from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger
+        hits = [{"source": "a.md", "text": "担当者は佐藤です。"},
+                {"source": "b.md", "text": "担当者は鈴木です。"}]
+        plan = build_answer_plan("担当者は？", hits)
+        result = validate_attribute_ledger(build_attribute_ledger(plan, hits))
+        self.assertTrue(result["has_conflict"])
+
+    def test_composer_receives_only_verified_attributes_and_final_validator_is_strict(self):
+        from rag.attribute_validation import (build_attribute_ledger, validate_attribute_ledger,
+            build_composer_prompt, validate_composed_answer)
+        hits = [{"source": "minutes.md", "text": "担当者は佐藤です。"}]
+        plan = build_answer_plan("担当者と期限は？", hits)
+        ledger = build_attribute_ledger(plan, hits)
+        validation = validate_attribute_ledger(ledger)
+        prompt = build_composer_prompt("BASE", ledger, validation)
+        self.assertIn('"attribute":"owner"', prompt)
+        self.assertNotIn('"attribute":"deadline"', prompt)
+        self.assertTrue(validate_composed_answer("担当者は佐藤です。", ledger, validation)[0])
+        self.assertFalse(validate_composed_answer("担当者は鈴木です。", ledger, validation)[0])
+
+    def test_conflicting_evidence_abstains_before_generation(self):
+        hits = [{"source": "a.md", "text": "担当者は佐藤です。"},
+                {"source": "b.md", "text": "担当者は鈴木です。"}]
+        calls = []
+        result = answer_with_pipeline("担当者は？", hits,
+            lambda prompt: calls.append(prompt) or "担当者は佐藤です。")
+        self.assertEqual(result["status"], "evidence_conflict")
+        self.assertEqual(result["answer"], ABSTAIN)
+        self.assertEqual(calls, [])
