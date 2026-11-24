@@ -72,11 +72,18 @@ def main():
                 if not q:
                     continue
                 hits, retrieval_diagnostics = search_with_diagnostics(store, q, 12)
-                result = answer_with_pipeline(q, hits, generator)
+                result = answer_with_pipeline(
+                    q, hits, generator,
+                    force_generation=(generator is not None),
+                    continuation=True, max_continuations=2,
+                )
                 answer = result["answer"]
                 store.log('user', q)
                 store.log('assistant', answer)
                 print(f'\n[{result["status"]}] {answer}')
+                rounds = result.get("generation_rounds", [])
+                print(f'[generation] calls={len(rounds) if isinstance(rounds, list) else 0} / '
+                      f'continuations={max(0, len(rounds)-1) if isinstance(rounds, list) else 0}')
                 print(f'[retrieval] {retrieval_diagnostics.get("latency_ms", 0)} ms / {retrieval_diagnostics.get("result_count", 0)} candidates')
     finally:
         store.close()
