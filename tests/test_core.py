@@ -76,8 +76,8 @@ class CoreTests(unittest.TestCase):
         result = answer_with_pipeline('会議の担当者と提出期限は？', hits, broken, retry=True, continuation=False, prefer_evidence_assembly=False)
         self.assertEqual(len(calls), 2)
         self.assertEqual(result['status'], 'generation_incomplete')
-        self.assertIn('佐藤', result['answer'])
-        self.assertIn('minutes.md', result['answer'])
+        self.assertEqual(result['answer'], ABSTAIN)
+        self.assertEqual(result['reason'], 'requirements_incomplete')
 
     def test_llm_adapter_rejects_non_loopback_endpoint(self):
         with self.assertRaises(ValueError):
@@ -191,7 +191,7 @@ class CoreTests(unittest.TestCase):
         result = answer_with_pipeline('CPUのみで動く実行方式は？', hits, generator)
         self.assertEqual(result['status'], 'generation_incomplete')
         self.assertEqual(len(calls), 1)
-        self.assertIn('CPU', result['answer'])
+        self.assertEqual(result['answer'], ABSTAIN)
 
 
     def test_complete_sentence_with_missing_slot_uses_fallback_without_continuation(self):
@@ -650,7 +650,7 @@ class AttributeBindingArchitectureTests(unittest.TestCase):
         hits = [{"source": "a.md", "text": "担当者は佐藤です。"},
                 {"source": "b.md", "text": "担当者は鈴木です。"}]
         calls = []
-        result = answer_with_pipeline("担当者は？", hits,
+        result = answer_with_pipeline("担当者は誰ですか？", hits,
             lambda prompt: calls.append(prompt) or "担当者は佐藤です。")
         self.assertEqual(result["status"], "evidence_conflict")
         self.assertEqual(result["answer"], ABSTAIN)
