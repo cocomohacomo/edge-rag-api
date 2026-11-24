@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, json, os, platform, random, statistics, subprocess, tempfile, time, urllib.request, urllib.error, resource
+import argparse, json, os, platform, random, statistics, subprocess, tempfile, time, urllib.request, urllib.error, resource, math
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -69,10 +69,10 @@ def main():
         if not ready: raise TimeoutError("llama-server readiness timeout")
         server_startup=time.perf_counter()-started
         retrieval_ms=[]; rows=[]
-        modes=("single","semantic_continuation")
+        modes=("evidence_assembly","single_pass","semantic_continuation")
         stats={mode:{"requests":[],"facts":0,"statuses":{},"prompt_ms":[],"generation_ms":[],
                      "prompt_tps":[],"generation_tps":[],"continuations":0,"rounds":[],
-                     "plan_covered":0,"plan_total":0,"answer_covered":0,
+                     "generation_calls":0,"generated_tokens":0,"plan_covered":0,"plan_total":0,"answer_covered":0,
                      "relation_covered":0,"relation_total":0} for mode in modes}
         retrieval_hits=0
         with tempfile.TemporaryDirectory() as td:
@@ -110,12 +110,16 @@ def main():
                             "truncated":response.get("truncated"),"tokens_predicted":gn,"n_predict":budget}
                     t=time.perf_counter()
                     result=answer_with_pipeline(case["question"],hits,generate,
-                        retry=False,continuation=(mode=="semantic_continuation"),max_continuations=2)
+                        retry=False,continuation=(mode=="semantic_continuation"),max_continuations=2,
+                        prefer_evidence_assembly=(mode=="evidence_assembly"),
+                        force_generation=(mode!="evidence_assembly"))
                     total_ms=(time.perf_counter()-t)*1000
                     answer=result["answer"]; status=result["status"]
                     mode_stats=stats[mode]
                     mode_stats["requests"].append(total_ms)
                     mode_stats["statuses"][status]=mode_stats["statuses"].get(status,0)+1
+                    mode_stats["generation_calls"] += len(call_metrics)
+                    mode_stats["generated_tokens"] += sum(m["generated_tokens"] for m in call_metrics)
                     ok=all(term.lower() in answer.lower() for term in case["terms"])
                     mode_stats["facts"] += int(ok)
                     plan=result.get("answer_plan", {})
@@ -168,7 +172,8 @@ def main():
             metrics_by_mode[mode]={
                 "end_to_end_request_ms":{"mean":round(statistics.mean(requests),2),
                     "p50":round(statistics.median(requests),2),
-                    "p95":round(sorted(requests)[int(.95*(len(requests)-1))],2)},
+                    "p95_nearest_rank":round(sorted(requests)[max(0,math.ceil(.95*len(requests))-1)],2),
+                    "max":round(max(requests),2)},
                 "answer_fact_term_accuracy":round(st["facts"]/len(CASES),4),
                 "evidence_requirement_coverage":round(st["plan_covered"]/st["plan_total"],4) if st["plan_total"] else None,
                 "answer_requirement_coverage":round(st["answer_covered"]/st["plan_total"],4) if st["plan_total"] else None,
@@ -176,6 +181,9 @@ def main():
                 "answer_relation_coverage":round(st["relation_covered"]/st["relation_total"],4) if st["relation_total"] else None,
                 "answer_relation_count":st["relation_total"],
                 "answer_status_counts":st["statuses"],
+                "generation_calls":st["generation_calls"],
+                "generated_tokens":st["generated_tokens"],
+                "generation_invocation_rate":round(sum(1 for row in rows if row["mode"]==mode and row["generation_rounds"]>0)/len(CASES),4),
                 "continuation_rate":round(st["continuations"]/len(CASES),4),
                 "mean_generation_rounds":round(statistics.mean(st["rounds"]),2),
                 "prompt_processing_ms_mean":round(statistics.mean(st["prompt_ms"]),2) if st["prompt_ms"] else None,
@@ -183,18 +191,21 @@ def main():
                 "generation_ms_mean":round(statistics.mean(st["generation_ms"]),2) if st["generation_ms"] else None,
                 "generation_tokens_per_second_mean":round(statistics.mean(st["generation_tps"]),2) if st["generation_tps"] else None}
         mem=proc_memory_mb(proc.pid)
-        result={"schema_version":3,"benchmark":"RAG single-pass vs semantic-continuation A/B",
+        result={"schema_version":3,"benchmark":"RAG evidence-assembly vs forced-LLM single-pass vs semantic-continuation A/B",
+            "generation_required_modes":["single_pass","semantic_continuation"],
             "platform":platform.platform(),"python":platform.python_version(),"model":Path(args.model).name,
             "threads":args.threads,"context_tokens":args.ctx,"initial_generation_tokens":args.max_tokens,
             "continuation_generation_tokens":min(24,args.max_tokens),"max_continuations":2,
             "documents":len(DOCS),"queries":len(CASES),"server_startup_seconds":round(server_startup,3),
             "retrieval_ms":{"mean":round(statistics.mean(retrieval_ms),3),
                 "p50":round(statistics.median(retrieval_ms),3),
-                "p95":round(sorted(retrieval_ms)[int(.95*(len(retrieval_ms)-1))],3)},
+                "p95_nearest_rank":round(sorted(retrieval_ms)[max(0,math.ceil(.95*len(retrieval_ms))-1)],3),
+                "max":round(max(retrieval_ms),3)},
             "retrieval_source_hit_rate":round(retrieval_hits/len(CASES),4),
             "retrieval_channel_candidate_counts":{key:sum(int(row.get("retrieval_diagnostics",{}).get("channels",{}).get(key,{}).get("candidate_count",0)) for row in rows if row["mode"]=="single") for key in ("fts5_bm25","bigram","exact_match")},
             "metrics_by_mode":metrics_by_mode,"server_memory_mb":mem,"cases":rows,
             "limitations":["Synthetic 8-document corpus and 8 fixed questions; not a human-rated benchmark.",
+                "Forced-generation invocation rate is calculated only for cases passing the retrieval gate; rejected-evidence cases are reported separately.",
                 "Fact-term match is a strict lexical proxy, not semantic correctness.",
                 "GitHub Actions runner metrics are not equivalent to the user's 8GB Intel i5-10310U machine.",
                 "Both modes share one server; order alternates to reduce but cannot eliminate prompt-cache effects."]}
