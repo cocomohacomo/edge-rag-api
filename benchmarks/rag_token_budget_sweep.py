@@ -4,7 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rag.core import Store
-from rag.answering import answer_with_pipeline, _missing_slots
+from rag.answering import answer_with_pipeline, _missing_slots, _prompt_question, _is_continuation_prompt
 from rag.retrieval_v2 import search_with_diagnostics
 from rag_e2e_benchmark import CASES, DOCS, get_json
 
@@ -43,8 +43,8 @@ def main():
                     hits,_=search_with_diagnostics(store,case["question"],12)
                     call_metrics=[]
                     def generate(prompt):
-                        q=prompt.split("\nQ:",1)[-1].split("\n根拠:",1)[0]
-                        budget=min(budget_cap,24) if "[CONTINUATION]" in prompt else budget_cap
+                        q=_prompt_question(prompt)
+                        budget=min(budget_cap,24) if _is_continuation_prompt(prompt) else budget_cap
                         response=get_json(base+"/completion",{"prompt":prompt,"n_predict":budget,"temperature":0.0,
                             "top_k":1,"top_p":1.0,"seed":42,"cache_prompt":True},timeout=300)
                         timing=response.get("timings",{})

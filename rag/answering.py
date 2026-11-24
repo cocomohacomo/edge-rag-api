@@ -55,6 +55,21 @@ def _generation_payload(value: object) -> tuple[str, dict]:
     return str(value or ""), {}
 
 
+def _prompt_question(prompt: str) -> str:
+    """Read the explicit question section in initial and continuation prompts."""
+    match = re.search(
+        r"(?:^|\n)質問本文\s*\n(.*?)\n(?:参照資料|根拠資料)\s*\n",
+        prompt or "", re.S,
+    )
+    if match:
+        return match.group(1).strip()
+    return (prompt or "").split("\nQ:", 1)[-1].split("\n根拠:", 1)[0].strip()
+
+
+def _is_continuation_prompt(prompt: str) -> bool:
+    return "現在までに確定した回答" in (prompt or "") or "[CONTINUATION]" in (prompt or "")
+
+
 
 END_MARKER = "<END_ANSWER>"
 CONTINUE_MARKER = "<CONTINUE>"
@@ -853,8 +868,8 @@ def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: i
     url = endpoint.rstrip("/") + "/completion"
 
     def generate(prompt: str) -> dict:
-        question = prompt.split("\nQ:", 1)[-1].split("\n根拠:", 1)[0]
-        budget = min(24, max_tokens) if "[CONTINUATION]" in prompt else generation_budget(question, max_tokens)
+        question = _prompt_question(prompt)
+        budget = min(24, max_tokens) if _is_continuation_prompt(prompt) else generation_budget(question, max_tokens)
         payload = json.dumps({
             "prompt": prompt, "n_predict": budget, "temperature": 0.0,
             "top_k": 1, "top_p": 1.0, "seed": 42, "cache_prompt": True,

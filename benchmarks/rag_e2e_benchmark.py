@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rag.core import Store
-from rag.answering import answer_with_pipeline, generation_budget, _missing_slots, _missing_relations, _generation_contamination_reason
+from rag.answering import answer_with_pipeline, generation_budget, _missing_slots, _missing_relations, _generation_contamination_reason, _prompt_question, _is_continuation_prompt
 from rag.retrieval_v2 import search_with_diagnostics
 
 CASES = [
@@ -94,8 +94,8 @@ def main():
                     def generate(prompt):
                         nonlocal generation_attempts
                         generation_attempts += 1
-                        question=prompt.split("\nQ:",1)[-1].split("\n根拠:",1)[0]
-                        budget=min(24,args.max_tokens) if "[CONTINUATION]" in prompt else generation_budget(question,args.max_tokens)
+                        question=_prompt_question(prompt)
+                        budget=min(24,args.max_tokens) if _is_continuation_prompt(prompt) else generation_budget(question,args.max_tokens)
                         response=get_json(base+"/completion",{
                             "prompt":prompt,"n_predict":budget,"temperature":0.0,
                             "top_k":1,"top_p":1.0,"seed":42,"cache_prompt":True
