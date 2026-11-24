@@ -500,7 +500,8 @@ def extractive_fallback(question: str, hits: Iterable[dict], max_sentences: int 
             )
             score = coverage + 0.20 * attribute_hits
             if coverage > 0 or attribute_hits:
-                candidates.append((score, len(sentence), sentence, hit.get("source", "unknown")))    candidates.sort(key=lambda x: (x[0], -x[1]), reverse=True)
+                candidates.append((score, len(sentence), sentence, hit.get("source", "unknown")))
+    candidates.sort(key=lambda x: (x[0], -x[1]), reverse=True)
     selected = []
     seen = set()
     for _, _, sentence, source in candidates:
