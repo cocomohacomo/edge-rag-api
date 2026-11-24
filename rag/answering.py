@@ -3,6 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 from typing import Callable, Iterable
+
+try:
+    from .attribute_validation import (
+        build_attribute_ledger, validate_attribute_ledger,
+        build_composer_prompt, validate_composed_answer,
+    )
+except ImportError:  # direct execution via rag/cli.py
+    from attribute_validation import (
+        build_attribute_ledger, validate_attribute_ledger,
+        build_composer_prompt, validate_composed_answer,
+    )
 import json
 import urllib.request
 
@@ -615,6 +626,15 @@ def answer_with_pipeline(
                 "retrieval": decision, "generation_rounds": 0,
                 "answer_plan": plan, "progress": build_progress_summary(plan)}
     selected = list(decision.accepted)
+    attribute_ledger = build_attribute_ledger(plan, selected)
+    attribute_validation = validate_attribute_ledger(attribute_ledger)
+    if attribute_validation["has_conflict"]:
+        return {"answer": ABSTAIN, "status": "evidence_conflict",
+                "reason": "attribute_conflict", "retrieval": decision,
+                "generation_rounds": 0, "answer_plan": plan,
+                "attribute_ledger": attribute_ledger,
+                "attribute_validation": attribute_validation,
+                "progress": build_progress_summary(plan, validated=False)}
 
     if generator is None:
         return {"answer": ABSTAIN, "status": "generation_unavailable",
@@ -622,7 +642,7 @@ def answer_with_pipeline(
                 "generation_rounds": 0, "answer_plan": plan,
                 "progress": build_progress_summary(plan, validated=False)}
 
-    base_prompt = build_evidence_prompt(question, selected)
+    base_prompt = build_composer_prompt(build_evidence_prompt(question, selected), attribute_ledger, attribute_validation)
     accumulated = ""
     rounds = []
     last_reason = "empty"
@@ -696,7 +716,9 @@ def answer_with_pipeline(
         rounds[-1]["validation_reason"] = last_reason
         rounds[-1]["numeric_diagnostics"] = _numeric_claim_diagnostics(accumulated, selected)
         rounds[-1]["completion_signal"] = marker or ("punctuation" if text_complete else None)
-        if valid and not missing and text_complete:
+        attribute_ok, attribute_reason = validate_composed_answer(accumulated, attribute_ledger, attribute_validation)
+        rounds[-1]["attribute_validation"] = attribute_reason
+        if valid and attribute_ok and not missing and text_complete:
             rounds[-1]["state"] = "completed"
             state = "completed"
             return {"answer": accumulated.strip(), "status": "generated",
@@ -786,11 +808,12 @@ def answer_with_pipeline(
     if state not in {"failed", "contaminated"}:
         last_reason = validation_reason
     missing = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
-    if valid and not missing and re.search(r"[。！？!?）」』】]$", accumulated.strip()):
+    attribute_ok, attribute_reason = validate_composed_answer(accumulated, attribute_ledger, attribute_validation)
+    if valid and attribute_ok and not missing and re.search(r"[。！？!?）」』】]$", accumulated.strip()):
         return {"answer": accumulated.strip(), "status": "generated",
                 "reason": "semantic_completion", "retrieval": decision,
                 "generation_rounds": rounds, "missing_slots": [],
-                "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
+                "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "progress": build_progress_summary(plan, validated=True)}
     # Generation-required callers must be able to distinguish an incomplete
     # generation from a deterministic answer. Never hide a failed LLM attempt
     # by silently replacing it with evidence assembly.
@@ -816,7 +839,7 @@ def answer_with_pipeline(
                 "retrieval": decision, "generation_rounds": rounds,
                 "missing_slots": missing, "answer_plan": plan,
                 "progress": build_progress_summary(plan, validated=False),
-                "numeric_diagnostics": _numeric_claim_diagnostics(accumulated, selected)}
+                "attribute_validation_reason": attribute_reason, "numeric_diagnostics": _numeric_claim_diagnostics(accumulated, selected)}
 
     assembled = assemble_evidence_answer(plan)
     assembled_valid = (bool(assembled) and validate_answer(assembled, question, selected)[0]
