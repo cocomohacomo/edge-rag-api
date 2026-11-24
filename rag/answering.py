@@ -520,8 +520,14 @@ def answer_with_pipeline(
     continuation: bool = True,
     max_continuations: int = 2,
     prefer_evidence_assembly: bool = True,
+    force_generation: bool = False,
 ) -> dict:
-    """Evidence gate -> bounded semantic continuation -> validation -> extractive fallback."""
+    """Evidence gate -> optional deterministic assembly -> bounded LLM loop -> validated fallback.
+
+    force_generation bypasses the pre-generation evidence assembler. When enabled,
+    a missing generator is reported explicitly instead of silently returning an
+    assembled answer, which makes generation-required callers and benchmarks auditable.
+    """
     decision = retrieval_gate(question, hits)
     plan = build_answer_plan(question, decision.accepted)
     if not decision.accepted:
@@ -529,7 +535,7 @@ def answer_with_pipeline(
                 "retrieval": decision, "generation_rounds": 0,
                 "answer_plan": plan, "progress": build_progress_summary(plan)}
     selected = list(decision.accepted)
-    if prefer_evidence_assembly:
+    if prefer_evidence_assembly and not force_generation:
         assembled = assemble_evidence_answer(plan)
         assembled_valid = (bool(assembled) and validate_answer(assembled, question, selected)[0]
                            and not _missing_relations(question, assembled, selected))
@@ -539,6 +545,11 @@ def answer_with_pipeline(
                     "retrieval": decision, "generation_rounds": 0, "missing_slots": [],
                     "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
     if generator is None:
+        if force_generation:
+            return {"answer": ABSTAIN, "status": "generation_unavailable",
+                    "reason": "forced_generation_requires_generator", "retrieval": decision,
+                    "generation_rounds": 0, "answer_plan": plan,
+                    "progress": build_progress_summary(plan)}
         assembled = assemble_evidence_answer(plan)
         assembled_valid = (bool(assembled) and validate_answer(assembled, question, selected)[0]
                        and not _missing_relations(question, assembled, selected))
@@ -727,6 +738,7 @@ def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: i
             body = json.loads(response.read().decode("utf-8"))
         return {"content": str(body.get("content") or ""), "stop": body.get("stop"),
                 "stopped_eos": body.get("stopped_eos"), "stopped_word": body.get("stopped_word"),
-                "stopped_limit": body.get("stopped_limit"), "stop": body.get("stop"),
+                "stopped_limit": body.get("stopped_limit"), "stop_type": body.get("stop_type"),
+                "truncated": body.get("truncated"),
                 "tokens_predicted": body.get("tokens_predicted"), "n_predict": budget}
     return generate
