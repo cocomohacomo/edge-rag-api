@@ -4,8 +4,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rag.core import Store
-from rag.answering import answer_with_pipeline, generation_budget, _missing_slots
-from rag_e2e_benchmark import CASES, DOCS, get_json, proc_memory_mb
+from rag.answering import answer_with_pipeline, _missing_slots
+from rag_e2e_benchmark import CASES, DOCS, get_json
 
 def main():
     ap=argparse.ArgumentParser(description="Sweep max generation token budgets for semantic-continuation RAG")
@@ -43,7 +43,7 @@ def main():
                     call_metrics=[]
                     def generate(prompt):
                         q=prompt.split("\nQ:",1)[-1].split("\n根拠:",1)[0]
-                        budget=min(budget_cap,24) if "[CONTINUATION]" in prompt else min(budget_cap,generation_budget(q,budget_cap))
+                        budget=min(budget_cap,24) if "[CONTINUATION]" in prompt else budget_cap
                         response=get_json(base+"/completion",{"prompt":prompt,"n_predict":budget,"temperature":0.0,
                             "top_k":1,"top_p":1.0,"seed":42,"cache_prompt":True},timeout=300)
                         timing=response.get("timings",{})
