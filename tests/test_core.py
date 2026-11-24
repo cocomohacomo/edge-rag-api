@@ -380,5 +380,42 @@ class CoreTests(unittest.TestCase):
         self.assertIsNotNone(assemble_evidence_answer(plan))
 
 
+    def test_forced_generation_bypasses_evidence_assembly(self):
+        hits = [{"score": .9, "source": "search.md", "text": "検索方式はSQLite FTS5を使用する。"}]
+        calls = []
+        def generator(prompt):
+            calls.append(prompt)
+            return {"content": "検索方式はSQLite FTS5です。<END_ANSWER>",
+                    "tokens_predicted": 8, "n_predict": 32, "stop": True}
+        result = answer_with_pipeline(
+            "検索方式は何ですか？", hits, generator,
+            continuation=False, force_generation=True,
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["status"], "generated")
+        self.assertEqual(result["generation_rounds"][0]["state"], "completed")
+
+    def test_forced_generation_fails_closed_without_generator(self):
+        hits = [{"score": .9, "source": "search.md", "text": "検索方式はSQLite FTS5を使用する。"}]
+        result = answer_with_pipeline(
+            "検索方式は何ですか？", hits, None, force_generation=True,
+        )
+        self.assertEqual(result["status"], "generation_unavailable")
+        self.assertEqual(result["reason"], "forced_generation_requires_generator")
+
+    def test_evidence_assembly_remains_separate_from_llm_generation(self):
+        hits = [{"score": .9, "source": "search.md", "text": "検索方式はSQLite FTS5を使用する。"}]
+        calls = []
+        def generator(prompt):
+            calls.append(prompt)
+            return "検索方式はSQLite FTS5です。"
+        result = answer_with_pipeline(
+            "検索方式は何ですか？", hits, generator,
+            prefer_evidence_assembly=True,
+        )
+        self.assertEqual(result["status"], "evidence_assembled")
+        self.assertEqual(calls, [])
+
+
 if __name__ == '__main__':
     unittest.main()
