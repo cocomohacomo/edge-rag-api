@@ -494,6 +494,8 @@ def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 
 def validate_answer(answer: str, question: str, hits: Iterable[dict], generation: dict | None = None) -> tuple[bool, str]:
     """Conservative deterministic guard against empty, off-topic and unsupported numeric output."""
     cleaned = (answer or "").strip()
+    if re.search(r"</?(?:system_thinking|think|answer|analysis)[^>]*>", cleaned, re.I):
+        return False, "internal_tag"
     contamination = _generation_contamination_reason(cleaned, question)
     if contamination:
         return False, "prompt_contamination:" + contamination

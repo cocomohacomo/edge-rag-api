@@ -506,7 +506,7 @@ class CoreTests(unittest.TestCase):
             if len(calls) == 1:
                 return {"content": "担当者は佐藤です。<CONTINUE>",
                         "stop": True, "tokens_predicted": 12, "n_predict": 48}
-            return {"content": "Q:会議の担当者と提出期限は？\nA:提出期限は12月15日です。<END_ANSWER>",
+            return {"content": "提出期限は12月15日です。<END_ANSWER>",
                     "stop": True, "tokens_predicted": 12, "n_predict": 24}
         from rag.answering import answer_with_pipeline
         result = answer_with_pipeline(
@@ -526,7 +526,7 @@ class CoreTests(unittest.TestCase):
 
 
     def test_legacy_continuation_marker_and_echoed_evidence_header_are_removed(self):
-        from rag.answering import _strip_control_markers, _clean_generation_delta
+        from rag.answering import _strip_control_markers, _clean_generation_delta, _generation_contamination_reason
         cleaned, state = _strip_control_markers("不足情報です。<CONTINUATION>")
         self.assertEqual(cleaned, "不足情報です。")
         self.assertEqual(state, "continue")
