@@ -1,10 +1,11 @@
 from __future__ import annotations
-import argparse, json, statistics, subprocess, time, tempfile, platform, resource, sys
+import argparse, json, statistics, subprocess, time, tempfile, platform, resource, sys, math
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rag.core import Store
 from rag.answering import answer_with_pipeline, _missing_slots
+from rag.retrieval_v2 import search_with_diagnostics
 from rag_e2e_benchmark import CASES, DOCS, get_json
 
 def main():
@@ -39,7 +40,7 @@ def main():
                 rows=[]; total_ms=[]; gen_ms=[]; prompt_ms=[]; tokens=[]; continuations=0
                 facts=0; evidence_cov=0; answer_cov=0; req_total=0; statuses={}
                 for case in CASES:
-                    hits=store.search(case["question"],12)
+                    hits,_=search_with_diagnostics(store,case["question"],12)
                     call_metrics=[]
                     def generate(prompt):
                         q=prompt.split("\nQ:",1)[-1].split("\n根拠:",1)[0]
@@ -59,7 +60,8 @@ def main():
                             "n_predict":budget}
                     started=time.perf_counter()
                     result=answer_with_pipeline(case["question"],hits,generate,retry=False,
-                        continuation=True,max_continuations=args.max_continuations)
+                        continuation=True,max_continuations=args.max_continuations,
+                        prefer_evidence_assembly=False,force_generation=True)
                     elapsed=(time.perf_counter()-started)*1000
                     answer=result["answer"]; total_ms.append(elapsed)
                     statuses[result["status"]]=statuses.get(result["status"],0)+1
@@ -79,18 +81,21 @@ def main():
                         "fact_terms_found":sum(term.lower() in answer.lower() for term in case["terms"]),
                         "fact_terms_total":len(case["terms"]),"requirements":req,
                         "missing_requirements":result.get("missing_slots",[]),"request_ms":round(elapsed,2),
-                        "rounds":rc,"continuation_count":max(0,rc-1),
+                        "rounds":rc,"generation_calls":len(call_metrics),"continuation_count":max(0,rc-1),
                         "generated_tokens":sum(m["generated_tokens"] for m in call_metrics),
                         "generation_ms":round(sum(m["generation_ms"] for m in call_metrics),2),
                         "prompt_ms":round(sum(m["prompt_ms"] for m in call_metrics),2)})
                 results.append({"max_token_budget":budget_cap,"case_count":len(CASES),
                     "mean_response_ms":round(statistics.mean(total_ms),2),
                     "p50_response_ms":round(statistics.median(total_ms),2),
-                    "p95_response_ms":round(sorted(total_ms)[int(.95*(len(total_ms)-1))],2),
+                    "p95_response_ms_nearest_rank":round(sorted(total_ms)[max(0,math.ceil(.95*len(total_ms))-1)],2),
+                    "max_response_ms":round(max(total_ms),2),
                     "fact_term_accuracy":round(facts/len(CASES),4),
                     "evidence_requirement_coverage":round(evidence_cov/req_total,4) if req_total else None,
                     "answer_requirement_coverage":round(answer_cov/req_total,4) if req_total else None,
                     "continuation_rate":round(continuations/len(CASES),4),
+                    "generation_invoked_cases":sum(1 for row in rows if row["generation_calls"]>0),
+                    "generation_invocation_rate":round(sum(1 for row in rows if row["generation_calls"]>0)/len(CASES),4),
                     "mean_generated_tokens":round(statistics.mean(tokens),2) if tokens else 0,
                     "mean_generation_ms":round(statistics.mean(gen_ms),2) if gen_ms else None,
                     "mean_prompt_ms":round(statistics.mean(prompt_ms),2) if prompt_ms else None,
