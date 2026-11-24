@@ -625,22 +625,10 @@ def answer_with_pipeline(
                     "retrieval": decision, "generation_rounds": 0, "missing_slots": [],
                     "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
     if generator is None:
-        if force_generation:
-            return {"answer": ABSTAIN, "status": "generation_unavailable",
-                    "reason": "forced_generation_requires_generator", "retrieval": decision,
-                    "generation_rounds": 0, "answer_plan": plan,
-                    "progress": build_progress_summary(plan)}
-        assembled = assemble_evidence_answer(plan)
-        assembled_valid = (bool(assembled) and validate_answer(assembled, question, selected)[0]
-                       and not _missing_relations(question, assembled, selected))
-        if assembled_valid:
-            return {"answer": assembled, "status": "evidence_assembled",
-                    "reason": "all_requirements_have_direct_evidence", "retrieval": decision,
-                    "generation_rounds": 0, "missing_slots": [],
-                    "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
-        return {"answer": extractive_fallback(question, selected), "status": "extractive_fallback",
-                "reason": "generation_unavailable", "retrieval": decision, "generation_rounds": 0,
-                "answer_plan": plan, "progress": build_progress_summary(plan)}
+        return {"answer": ABSTAIN, "status": "generation_unavailable",
+                "reason": "llm_generation_required", "retrieval": decision,
+                "generation_rounds": 0, "answer_plan": plan,
+                "progress": build_progress_summary(plan, validated=False)}
 
     base_prompt = build_evidence_prompt(question, selected)
     accumulated = ""

@@ -269,9 +269,9 @@ class CoreTests(unittest.TestCase):
             "text": "担当者は佐藤です。期限は12月15日です。"
         }]
         result = answer_with_pipeline("会議の担当者と期限を教えてください", hits, None)
-        self.assertEqual(result["status"], "evidence_assembled")
-        self.assertIn("佐藤", result["answer"])
-        self.assertIn("12月15日", result["answer"])
+        self.assertEqual(result["status"], "generation_unavailable")
+        self.assertEqual(result["answer"], ABSTAIN)
+        self.assertEqual(result["generation_rounds"], 0)
         self.assertEqual(result["generation_rounds"], 0)
 
     def test_answer_plan_tracks_missing_evidence_without_inventing_values(self):
