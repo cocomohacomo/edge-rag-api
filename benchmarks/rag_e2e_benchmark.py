@@ -88,7 +88,10 @@ def main():
                 order=list(modes) if case_index % 2 == 0 else list(reversed(modes))
                 for mode in order:
                     call_metrics=[]
+                    generation_attempts=0
                     def generate(prompt):
+                        nonlocal generation_attempts
+                        generation_attempts += 1
                         question=prompt.split("\nQ:",1)[-1].split("\n根拠:",1)[0]
                         budget=min(24,args.max_tokens) if "[CONTINUATION]" in prompt else generation_budget(question,args.max_tokens)
                         response=get_json(base+"/completion",{
@@ -118,7 +121,7 @@ def main():
                     mode_stats=stats[mode]
                     mode_stats["requests"].append(total_ms)
                     mode_stats["statuses"][status]=mode_stats["statuses"].get(status,0)+1
-                    mode_stats["generation_calls"] += len(call_metrics)
+                    mode_stats["generation_calls"] += generation_attempts
                     mode_stats["generated_tokens"] += sum(m["generated_tokens"] for m in call_metrics)
                     ok=all(term.lower() in answer.lower() for term in case["terms"])
                     mode_stats["facts"] += int(ok)
