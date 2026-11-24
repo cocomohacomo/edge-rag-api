@@ -351,6 +351,34 @@ class CoreTests(unittest.TestCase):
         plan = build_answer_plan('対象端末のCPUは？', hits)
         self.assertIn('i5-10310U', plan['evidence_mapping']['device'][0]['values'])
 
+    def test_relation_plan_requires_model_and_search_db_coexistence(self):
+        hits = [{"score": .4, "source": "memory.md",
+                 "text": "8GB RAM内でモデルと検索DBを共存させる。回答生成時のピークメモリを測定する。"}]
+        plan = build_answer_plan("回答生成時に重視するメモリ制約は何ですか？", hits)
+        self.assertEqual(plan["missing_relations"], [])
+        answer = assemble_evidence_answer(plan)
+        self.assertIn("モデルと検索DBを共存", answer)
+        from rag.answering import _missing_relations
+        self.assertEqual(_missing_relations("回答生成時に重視するメモリ制約は何ですか？",
+                                            "メモリは8GB RAMです。", hits),
+                         ["relation:model_search_db_coexistence"])
+        self.assertEqual(_missing_relations("回答生成時に重視するメモリ制約は何ですか？",
+                                            answer, hits), [])
+
+    def test_relation_plan_rejects_missing_relation_evidence(self):
+        plan = build_answer_plan("回答生成時に重視するメモリ制約は何ですか？", [
+            {"score": .4, "source": "memory.md", "text": "メモリは8GB RAM。"}
+        ])
+        self.assertEqual(plan["missing_relations"], ["model_search_db_coexistence"])
+        self.assertIsNone(assemble_evidence_answer(plan))
+
+    def test_offline_relation_is_tracked_separately_from_network_attribute(self):
+        hits = [{"score": .4, "source": "offline.md",
+                 "text": "初回導入後はオフラインで動作する。実行時のネットワーク接続を必要としない。"}]
+        plan = build_answer_plan("配布時のネットワーク要件はどうなっていますか？", hits)
+        self.assertEqual(plan["missing_relations"], [])
+        self.assertIsNotNone(assemble_evidence_answer(plan))
+
 
 if __name__ == '__main__':
     unittest.main()
