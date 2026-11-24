@@ -573,7 +573,7 @@ def answer_with_pipeline(
 
     if retry and not accumulated and state != "failed":
         try:
-            raw = generator(base_prompt + "\\n根拠中の回答可能な事実だけを簡潔に回答してください。")
+            raw = generator(base_prompt + "\n根拠中の回答可能な事実だけを簡潔に回答してください。")
             candidate, _ = _generation_payload(raw)
             candidate, _ = _strip_control_markers(candidate)
             accumulated = candidate
