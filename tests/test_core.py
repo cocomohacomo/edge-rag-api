@@ -297,7 +297,8 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(complete["checks"][-1]["done"])
 
     def test_evidence_prompt_explicitly_plans_requirements_and_preserves_identifiers(self):
-        hits = [{            "source": "spec.md",
+        hits = [{
+            "source": "spec.md",
             "text": "担当者は佐藤です。期限は12月15日です。URLはhttps://example.com/docs。パスはdocs/spec.mdです。"
         }]
         prompt = build_evidence_prompt("担当者と期限、URL、パスは？", hits)
