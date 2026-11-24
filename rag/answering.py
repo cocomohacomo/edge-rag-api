@@ -358,12 +358,12 @@ def _clean_generation_delta(candidate: str, question: str) -> str:
             continue
         if re.match(r"^(?:Q|質問|根拠|回答計画|要求属性)[:：]", value, re.I):
             continue
-        value = re.sub(r"^(?:A|回答)[:：]\\s*", "", value, flags=re.I)
+        value = re.sub(r"^(?:A|回答)[:：]\s*", "", value, flags=re.I)
         if question and question in value:
             value = value.replace(question, "").strip()
         if value:
             cleaned.append(value)
-    result = "\\n".join(cleaned).strip()
+    result = "\n".join(cleaned).strip()
     # A model may echo the exact question without a Q: prefix.
     if question:
         result = result.replace(question, "").strip()
@@ -377,19 +377,19 @@ def _continuation_prompt(question: str, hits: Iterable[dict], accumulated: str,
     evidence = []
     for index, hit in enumerate(hits, 1):
         source = str(hit.get("source", "unknown"))
-        passage = re.sub(r"\\s+", " ", str(hit.get("text", ""))).strip()
+        passage = re.sub(r"\s+", " ", str(hit.get("text", ""))).strip()
         if passage:
             evidence.append(f"[根拠{index}] {source}: {passage[:700]}")
     return (
-        "あなたは既存回答を補完する役割です。次の情報だけを使ってください。\\n"
-        f"質問: {question}\\n"
-        "根拠資料:\\n" + "\\n".join(evidence) + "\\n"
-        f"既存回答（変更せず保持）:\\n<EXISTING_ANSWER>\\n{accumulated}\\n</EXISTING_ANSWER>\\n"
-        f"不足項目: {missing_text}\\n"
+        "あなたは既存回答を補完する役割です。次の情報だけを使ってください。\n"
+        f"質問: {question}\n"
+        "根拠資料:\n" + "\n".join(evidence) + "\n"
+        f"既存回答（変更せず保持）:\n<EXISTING_ANSWER>\n{accumulated}\n</EXISTING_ANSWER>\n"
+        f"不足項目: {missing_text}\n"
         "出力規則: 不足項目に対応する追加文だけを出力する。既存回答を再掲しない。"
         "質問、根拠、見出し、Q:、A:を出力しない。"
         "不足項目がない場合は既存回答を繰り返さず、完結を示す終了マーカーだけを出力する。"
-        f"追加文の末尾には {END_MARKER}、追加がさらに必要な場合のみ {CONTINUE_MARKER} を付ける。\\n"
+        f"追加文の末尾には {END_MARKER}、追加がさらに必要な場合のみ {CONTINUE_MARKER} を付ける。\n"
         "追加文:"
     )
 
