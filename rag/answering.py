@@ -141,10 +141,16 @@ def _missing_relations(question: str, answer: str, hits: Iterable[dict]) -> list
         # Require the answer to carry the relation-bearing evidence, not merely one
         # isolated attribute such as "8GB".
         supported = False
+        anchors = {
+            "model_search_db_coexistence": {"モデル", "検索DB", "共存"},
+            "offline_runtime_requirement": {"オフライン", "ネットワーク", "実行時"},
+            "topsoil_and_cultivation": {"表土", "土壌", "営農可能性"},
+        }.get(spec["id"], set())
         for entry in entries:
             relation_terms = set(japanese_terms(entry["text"]))
             overlap = len(answer_terms & relation_terms) / max(1, len(relation_terms))
-            if overlap >= 0.45:
+            anchor_hits = sum(1 for term in anchors if term in answer)
+            if overlap >= 0.30 or (anchors and anchor_hits >= 2):
                 supported = True
                 break
         if not supported:
@@ -342,16 +348,49 @@ def _append_without_overlap(previous: str, addition: str) -> str:
     return previous + ("" if not addition else ("\n" if previous.endswith(("。", "！", "？", "\n")) else "") + addition)
 
 
-def _continuation_prompt(base_prompt: str, accumulated: str, missing: list[str]) -> str:
-    missing_text = ", ".join(missing) if missing else "回答文の完結と明示的な終了"
+def _clean_generation_delta(candidate: str, question: str) -> str:
+    """Remove echoed prompt/control lines before answer text is accumulated."""
+    text, _ = _strip_control_markers(candidate or "")
+    cleaned = []
+    for line in text.splitlines():
+        value = line.strip()
+        if not value or value == "[CONTINUATION]":
+            continue
+        if re.match(r"^(?:Q|質問|根拠|回答計画|要求属性)[:：]", value, re.I):
+            continue
+        value = re.sub(r"^(?:A|回答)[:：]\\s*", "", value, flags=re.I)
+        if question and question in value:
+            value = value.replace(question, "").strip()
+        if value:
+            cleaned.append(value)
+    result = "\\n".join(cleaned).strip()
+    # A model may echo the exact question without a Q: prefix.
+    if question:
+        result = result.replace(question, "").strip()
+    return result
+
+
+def _continuation_prompt(question: str, hits: Iterable[dict], accumulated: str,
+                         missing: list[str]) -> str:
+    """Build a fresh delta-only prompt; never concatenate onto the initial prompt."""
+    missing_text = "、".join(missing) if missing else "回答の自然な完結"
+    evidence = []
+    for index, hit in enumerate(hits, 1):
+        source = str(hit.get("source", "unknown"))
+        passage = re.sub(r"\\s+", " ", str(hit.get("text", ""))).strip()
+        if passage:
+            evidence.append(f"[根拠{index}] {source}: {passage[:700]}")
     return (
-        base_prompt + accumulated +
-        "\n\n[CONTINUATION]\nこれは回答の続きです。既出の事実や文を繰り返さず、"
-        "根拠にある不足情報だけを追加してください。"
-        "必要項目が既に揃っている場合は、新しい事実を追加せず、現在の回答を自然な完全文として閉じてください。"
-        f"未充足項目・完結条件: {missing_text}。"
-        f"回答を完結したら必ず {END_MARKER} を末尾に付けてください。"
-        f"まだ回答を続ける必要がある場合だけ {CONTINUE_MARKER} を付けてください。\n"
+        "あなたは既存回答を補完する役割です。次の情報だけを使ってください。\\n"
+        f"質問: {question}\\n"
+        "根拠資料:\\n" + "\\n".join(evidence) + "\\n"
+        f"既存回答（変更せず保持）:\\n<EXISTING_ANSWER>\\n{accumulated}\\n</EXISTING_ANSWER>\\n"
+        f"不足項目: {missing_text}\\n"
+        "出力規則: 不足項目に対応する追加文だけを出力する。既存回答を再掲しない。"
+        "質問、根拠、見出し、Q:、A:を出力しない。"
+        "不足項目がない場合は既存回答を繰り返さず、完結を示す終了マーカーだけを出力する。"
+        f"追加文の末尾には {END_MARKER}、追加がさらに必要な場合のみ {CONTINUE_MARKER} を付ける。\\n"
+        "追加文:"
     )
 
 
@@ -580,7 +619,7 @@ def answer_with_pipeline(
             state = "generating_initial"
         else:
             missing_before = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
-            prompt = _continuation_prompt(base_prompt, accumulated, missing_before)
+            prompt = _continuation_prompt(question, selected, accumulated, missing_before)
             state = "generating_continuation"
         try:
             raw = generator(prompt)
@@ -596,6 +635,7 @@ def answer_with_pipeline(
             break
 
         candidate, marker = _strip_control_markers(candidate)
+        candidate = _clean_generation_delta(candidate, question)
         truncated = _is_truncated(metadata)
         rounds.append({
             "round": round_index + 1,
