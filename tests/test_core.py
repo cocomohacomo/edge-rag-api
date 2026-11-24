@@ -522,7 +522,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(cleaned, "不足情報です。")
         self.assertEqual(state, "continue")
         delta = _clean_generation_delta(
-            "根拠資料:\\n[根拠1] minutes.md: 担当者は佐藤です。\\nA:期限は12月15日です。",
+            "根拠資料:\n[根拠1] minutes.md: 担当者は佐藤です。\nA:期限は12月15日です。",
             "担当者と期限は？",
         )
         self.assertEqual(delta, "期限は12月15日です。")
