@@ -414,8 +414,10 @@ class CoreTests(unittest.TestCase):
             "検索方式は何ですか？", hits, generator,
             prefer_evidence_assembly=True,
         )
-        self.assertEqual(result["status"], "evidence_assembled")
-        self.assertEqual(calls, [])
+        self.assertEqual(result["status"], "generated")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("EVIDENCE_LEDGER_JSON", calls[0])
+        self.assertIn("SQLite FTS5", result["answer"])
 
 
     def test_forced_generation_does_not_hide_incomplete_output_with_assembly(self):
@@ -586,3 +588,27 @@ class TestGenerationContaminationQuarantine:
         assert result["status"] == "generation_contaminated"
         assert result["answer"] == ABSTAIN
         assert result["generation_rounds"][-1]["state"] == "contaminated"
+
+
+class EvidenceLedgerArchitectureTests(unittest.TestCase):
+    def test_ledger_has_source_ids_and_exact_numeric_values(self):
+        from rag.evidence_ledger import build_evidence_ledger
+        hits = [{"source":"req.md","text":"対象端末はi5-10310U。メモリ要件は8GB RAM。"}]
+        plan = build_answer_plan("端末とメモリは？", hits)
+        ledger = build_evidence_ledger("端末とメモリは？", hits, plan)
+        self.assertEqual(ledger["evidence"][0]["evidence_id"], "E1")
+        self.assertEqual(ledger["evidence"][0]["source"], "req.md")
+        self.assertIn("8GB", ledger["evidence"][0]["literal_values"])
+        self.assertIn("i5-10310U", ledger["evidence"][0]["literal_values"])
+
+    def test_llm_path_is_used_when_generator_is_available(self):
+        hits = [{"score": .9, "source":"manual.md", "text":"方式はSQLite FTS5です。"}]
+        calls = []
+        def generator(prompt):
+            calls.append(prompt)
+            return "方式はSQLite FTS5です。"
+        result = answer_with_pipeline("方式は何ですか？", hits, generator,
+                                    prefer_evidence_assembly=True)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["status"], "generated")
+        self.assertIn("Evidence", calls[0]) if "Evidence" in calls[0] else self.assertIn("EVIDENCE_LEDGER_JSON", calls[0])
