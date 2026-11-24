@@ -647,8 +647,8 @@ class AttributeBindingArchitectureTests(unittest.TestCase):
         self.assertFalse(validate_composed_answer("担当者は鈴木です。", ledger, validation)[0])
 
     def test_conflicting_evidence_abstains_before_generation(self):
-        hits = [{"source": "a.md", "text": "担当者は佐藤です。"},
-                {"source": "b.md", "text": "担当者は鈴木です。"}]
+        hits = [{"score": .9, "source": "a.md", "text": "担当者は佐藤です。"},
+                {"score": .9, "source": "b.md", "text": "担当者は鈴木です。"}]
         calls = []
         result = answer_with_pipeline("担当者は誰ですか？", hits,
             lambda prompt: calls.append(prompt) or "担当者は佐藤です。")
