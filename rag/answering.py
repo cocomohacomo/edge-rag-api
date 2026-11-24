@@ -95,6 +95,56 @@ def _requirement_names(question: str) -> list[str]:
     return list(dict.fromkeys(names))
 
 
+def _relation_specs(question: str) -> list[dict]:
+    """Deterministic relation requirements for questions whose answer needs linked facts."""
+    specs = []
+    if re.search(r"共存|同時に|メモリ制約|メモリ.*モデル|モデル.*メモリ", question):
+        specs.append({"id": "model_search_db_coexistence", "label": "モデルと検索DBの共存",
+                      "pattern": r"モデル.{0,30}(?:検索DB|検索データベース).{0,20}共存|(?:検索DB|検索データベース).{0,30}モデル.{0,20}共存"})
+    if re.search(r"オフライン|ネットワーク要件|接続", question):
+        specs.append({"id": "offline_runtime_requirement", "label": "初回導入後の実行時ネットワーク要件",
+                      "pattern": r"初回導入後.{0,50}オフライン|実行時.{0,30}ネットワーク接続.{0,20}必要としない"})
+    if re.search(r"表土|農地.*現状変更|現状変更.*農地|営農可能性", question):
+        specs.append({"id": "topsoil_and_cultivation", "label": "表土・土壌と施工後の営農可能性",
+                      "pattern": r"表土.{0,100}(?:土壌|営農可能性)|(?:土壌|営農可能性).{0,100}表土"})
+    return specs
+
+
+def _relation_evidence(spec: dict, hits: Iterable[dict]) -> list[dict]:
+    found = []
+    pattern = re.compile(spec["pattern"])
+    for hit in hits:
+        text = str(hit.get("text", ""))
+        for sentence in re.split(r"(?<=[。！？!?])\\s*|\\n+", text):
+            sentence = sentence.strip()
+            if sentence and pattern.search(sentence):
+                found.append({"source": str(hit.get("source", "unknown")),
+                              "text": sentence, "evidence": sentence})
+    return found
+
+
+def _missing_relations(question: str, answer: str, hits: Iterable[dict]) -> list[str]:
+    missing = []
+    answer_terms = set(japanese_terms(answer))
+    for spec in _relation_specs(question):
+        entries = _relation_evidence(spec, hits)
+        if not entries:
+            missing.append("relation:" + spec["id"])
+            continue
+        # Require the answer to carry the relation-bearing evidence, not merely one
+        # isolated attribute such as "8GB".
+        supported = False
+        for entry in entries:
+            relation_terms = set(japanese_terms(entry["text"]))
+            overlap = len(answer_terms & relation_terms) / max(1, len(relation_terms))
+            if overlap >= 0.45:
+                supported = True
+                break
+        if not supported:
+            missing.append("relation:" + spec["id"])
+    return missing
+
+
 def build_answer_plan(question: str, hits: Iterable[dict]) -> dict:
     """Build a deterministic, evidence-linked answer plan without another model call."""
     sources = list(hits)
@@ -119,6 +169,9 @@ def build_answer_plan(question: str, hits: Iterable[dict]) -> dict:
                 })
         mapping[slot] = candidates
     missing = [slot for slot in requirements if not mapping.get(slot)]
+    relation_requirements = _relation_specs(question)
+    relation_mapping = {spec["id"]: _relation_evidence(spec, sources) for spec in relation_requirements}
+    missing_relations = [key for key, entries in relation_mapping.items() if not entries]
     # Keep evidence ordering deterministic: requested-attribute coverage first,
     # then lexical question overlap, then the retrieval score.
     ranked = []
@@ -136,11 +189,15 @@ def build_answer_plan(question: str, hits: Iterable[dict]) -> dict:
         "requirements": requirements,
         "evidence_mapping": mapping,
         "missing_requirements": missing,
+        "relation_requirements": relation_requirements,
+        "relation_mapping": relation_mapping,
+        "missing_relations": missing_relations,
         "answer_order": requirements,
         "selected_sources": [str(item[4].get("source", "unknown")) for item in ranked],
         "validation": {
             "evidence_supported": bool(sources),
-            "requirements_complete": not missing,
+            "requirements_complete": not missing and not missing_relations,
+            "relations_complete": not missing_relations,
             "literal_integrity": "pending",
         },
     }
@@ -154,7 +211,7 @@ def assemble_evidence_answer(plan: dict) -> str | None:
         "location": "場所", "url": "URL", "path": "パス",
     }
     requirements = list(plan.get("requirements", []))
-    if not requirements or plan.get("missing_requirements"):
+    if (not requirements and not plan.get("relation_requirements")) or plan.get("missing_requirements") or plan.get("missing_relations"):
         return None
     lines = []
     for slot in requirements:
@@ -188,6 +245,7 @@ def build_progress_summary(plan: dict, *, validated: bool = False) -> dict:
             {"id": "integrity", "label": "数値・URL・パスの整合性を検証", "done": validated},
         ],
         "missing_requirements": list(plan.get("missing_requirements", [])),
+        "missing_relations": list(plan.get("missing_relations", [])),
     }
 
 
@@ -443,7 +501,8 @@ def answer_with_pipeline(
     selected = list(decision.accepted)
     if prefer_evidence_assembly:
         assembled = assemble_evidence_answer(plan)
-        assembled_valid = bool(assembled) and validate_answer(assembled, question, selected)[0]
+        assembled_valid = (bool(assembled) and validate_answer(assembled, question, selected)[0]
+                           and not _missing_relations(question, assembled, selected))
         if assembled_valid:
             return {"answer": assembled, "status": "evidence_assembled",
                     "reason": "pre_generation_all_requirements_have_direct_evidence",
@@ -451,7 +510,8 @@ def answer_with_pipeline(
                     "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
     if generator is None:
         assembled = assemble_evidence_answer(plan)
-        assembled_valid = bool(assembled) and validate_answer(assembled, question, selected)[0]
+        assembled_valid = (bool(assembled) and validate_answer(assembled, question, selected)[0]
+                       and not _missing_relations(question, assembled, selected))
         if assembled_valid:
             return {"answer": assembled, "status": "evidence_assembled",
                     "reason": "all_requirements_have_direct_evidence", "retrieval": decision,
@@ -509,7 +569,7 @@ def answer_with_pipeline(
         if candidate:
             accumulated = _append_without_overlap(accumulated, candidate)
         valid, last_reason = validate_answer(accumulated, question, selected)
-        missing = _missing_slots(question, accumulated, selected)
+        missing = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
         text_complete = marker == "end" or bool(re.search(r"[。！？!?）」』】]$", accumulated.strip()))
         rounds[-1]["validation_reason"] = last_reason
         rounds[-1]["completion_signal"] = marker or ("punctuation" if text_complete else None)
@@ -533,7 +593,10 @@ def answer_with_pipeline(
         # Do not ask the model to invent absent facts. Every missing requirement
         # must have at least one concrete value in retrieved evidence.
         evidence_text = " ".join(str(hit.get("text", "")) for hit in selected)
-        continuable_missing = [slot for slot in missing if _slot_values(slot, evidence_text)]
+        relation_ids = {"relation:" + spec["id"] for spec in _relation_specs(question)
+                        if _relation_evidence(spec, selected)}
+        continuable_missing = [slot for slot in missing
+                               if (slot in relation_ids) or _slot_values(slot, evidence_text)]
         if missing and len(continuable_missing) != len(missing):
             rounds[-1]["state"] = "missing_evidence"
             state = "blocked"
@@ -582,7 +645,7 @@ def answer_with_pipeline(
     valid, validation_reason = validate_answer(accumulated, question, selected)
     if state != "failed":
         last_reason = validation_reason
-    missing = _missing_slots(question, accumulated, selected)
+    missing = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
     if valid and not missing and re.search(r"[。！？!?）」』】]$", accumulated.strip()):
         return {"answer": accumulated.strip(), "status": "generated",
                 "reason": "semantic_completion", "retrieval": decision,
