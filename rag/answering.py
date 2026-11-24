@@ -819,6 +819,7 @@ def answer_with_pipeline(
     # by silently replacing it with evidence assembly.
     if force_generation:
         draft_valid, draft_reason = validate_answer(accumulated, question, selected)
+        attribute_ok, attribute_reason = validate_composed_answer(accumulated, attribute_ledger, attribute_validation)
         if state == "contaminated":
             forced_status = "generation_contaminated"
             forced_reason = last_reason
@@ -826,7 +827,7 @@ def answer_with_pipeline(
         elif state == "failed":
             forced_status = "generation_error"
             forced_reason = last_reason
-            visible_answer = accumulated.strip() if draft_valid else ABSTAIN
+            visible_answer = accumulated.strip() if draft_valid and attribute_ok else ABSTAIN
         else:
             forced_status = "generation_incomplete"
             forced_reason = (
