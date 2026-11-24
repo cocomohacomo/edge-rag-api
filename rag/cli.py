@@ -3,6 +3,7 @@ import argparse, sys, json
 from pathlib import Path
 from core import Store, extract_file
 from answering import answer_with_pipeline, local_llama_generator
+from retrieval_v2 import search_with_diagnostics
 
 
 def ingest(store: Store, paths: list[Path]) -> int:
@@ -49,7 +50,9 @@ def main():
         if args.cmd == 'ingest':
             ingest(store, [Path(x) for x in args.paths])
         elif args.cmd == 'search':
-            for hit in store.search(args.query, max(1, min(args.limit, 20))):
+            hits, diagnostics = search_with_diagnostics(store, args.query, max(1, min(args.limit, 20)))
+            print(json.dumps(diagnostics, ensure_ascii=False, indent=2))
+            for hit in hits:
                 print(f'[{hit["score"]}] {hit["source"]}\n{hit["text"]}\n')
         else:
             print('Edge RAG / offline prototype. 終了: /exit')
@@ -63,12 +66,13 @@ def main():
                     break
                 if not q:
                     continue
-                hits = store.search(q, 12)
+                hits, retrieval_diagnostics = search_with_diagnostics(store, q, 12)
                 result = answer_with_pipeline(q, hits, generator)
                 answer = result["answer"]
                 store.log('user', q)
                 store.log('assistant', answer)
                 print(f'\n[{result["status"]}] {answer}')
+                print(f'[retrieval] {retrieval_diagnostics.get("latency_ms", 0)} ms / {retrieval_diagnostics.get("result_count", 0)} candidates')
     finally:
         store.close()
 
