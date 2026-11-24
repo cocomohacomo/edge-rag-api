@@ -758,15 +758,3 @@ def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: i
         budget = min(24, max_tokens) if "[CONTINUATION]" in prompt else generation_budget(question, max_tokens)
         payload = json.dumps({
             "prompt": prompt, "n_predict": budget, "temperature": 0.0,
-            "top_k": 1, "top_p": 1.0, "seed": 42, "cache_prompt": True,
-        }, ensure_ascii=False).encode("utf-8")
-        request = urllib.request.Request(url, data=payload,
-            headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = json.loads(response.read().decode("utf-8"))
-        return {"content": str(body.get("content") or ""), "stop": body.get("stop"),
-                "stopped_eos": body.get("stopped_eos"), "stopped_word": body.get("stopped_word"),
-                "stopped_limit": body.get("stopped_limit"), "stop_type": body.get("stop_type"),
-                "truncated": body.get("truncated"),
-                "tokens_predicted": body.get("tokens_predicted"), "n_predict": budget}
-    return generate
