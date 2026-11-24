@@ -627,8 +627,8 @@ class AttributeBindingArchitectureTests(unittest.TestCase):
 
     def test_attribute_validator_marks_conflicting_values(self):
         from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger
-        hits = [{"source": "a.md", "text": "担当者は佐藤です。"},
-                {"source": "b.md", "text": "担当者は鈴木です。"}]
+        hits = [{"score": .9, "source": "a.md", "text": "担当者は佐藤です。"},
+                {"score": .9, "source": "b.md", "text": "担当者は鈴木です。"}]
         plan = build_answer_plan("担当者は？", hits)
         result = validate_attribute_ledger(build_attribute_ledger(plan, hits))
         self.assertTrue(result["has_conflict"])
