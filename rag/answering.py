@@ -1,618 +1,356 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
-import re
-from typing import Callable, Iterable
-import json
-import urllib.request
-
-try:
-    from .core import japanese_terms
-except ImportError:  # direct execution via rag/cli.py
-    from core import japanese_terms
+import tempfile, unittest
+from pathlib import Path
+from rag.core import Store, chunks, japanese_terms, answer_from_context
+from rag.answering import (
+    ABSTAIN, answer_with_pipeline, assemble_evidence_answer, build_evidence_prompt, build_answer_plan,
+    build_progress_summary, extractive_fallback, local_llama_generator,
+    retrieval_gate, validate_answer, generation_budget,
+)
 
 
-ABSTAIN = "関連する根拠が十分ではないため、回答できません。"
+class CoreTests(unittest.TestCase):
+    def test_japanese_bigrams(self):
+        self.assertIn('人工', japanese_terms('人工知能'))
+        self.assertIn('知能', japanese_terms('人工知能'))
+
+    def test_chunk_overlap(self):
+        parts = chunks('あ' * 1000, 300, 50)
+        self.assertGreater(len(parts), 1)
+        self.assertTrue(all(parts))
+
+    def test_ingest_search_and_history(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = Store(Path(td) / 'test.db')
+            p = Path(td) / 'manual.txt'
+            p.write_text('SURGEは情報をクラスターとして管理する。フォーカスは認知対象を示す。', encoding='utf-8')
+            self.assertGreater(db.add_document(p, p.read_text(encoding='utf-8')), 0)
+            hits = db.search('情報 クラスター', 3)
+            self.assertTrue(hits)
+            self.assertIn('manual.txt', answer_from_context('クラスターとは', hits))
+            db.log('user', 'テスト')
+            self.assertEqual(db.history(1)[0]['content'], 'テスト')
+            db.close()
+
+    def test_retrieval_gate_rejects_unrelated_documents(self):
+        hits = [
+            {'score': .3, 'source': 'index.md', 'text': '文書をチャンク化してFTS5に登録する。'},
+            {'score': .2, 'source': 'offline.md', 'text': '初回導入後はオフラインで動作する。'},
+        ]
+        decision = retrieval_gate('文書をチャンク化してFTS5に登録する方法は？', hits)
+        self.assertEqual([h['source'] for h in decision.accepted], ['index.md'])
+        self.assertEqual([h['source'] for h in decision.rejected], ['offline.md'])
+
+    def test_gate_abstains_when_no_evidence(self):
+        result = answer_with_pipeline('量子暗号の方式は？', [
+            {'score': .2, 'source': 'a', 'text': '会議担当者は佐藤。期限は12月15日。'}
+        ])
+        self.assertEqual(result['status'], 'abstained')
+        self.assertEqual(result['answer'], ABSTAIN)
+
+    def test_evidence_prompt_is_constrained(self):
+        prompt = build_evidence_prompt('担当者は？', [
+            {'source': 'minutes.md', 'text': '担当者は佐藤。'}
+        ])
+        self.assertIn('根拠だけ', prompt)
+        self.assertIn('minutes.md', prompt)
+        self.assertIn('担当者は？', prompt)
+
+    def test_validator_rejects_unsupported_number_and_empty(self):
+        hits = [{'source': 'minutes.md', 'text': '担当者は佐藤。期限は12月15日。'}]
+        self.assertEqual(validate_answer('', '期限は？', hits), (False, 'empty'))
+        self.assertEqual(validate_answer('期限は12月20日です。', '期限は？', hits)[1],
+                         'unsupported_number')
+
+    def test_validator_accepts_grounded_answer(self):
+        hits = [{'source': 'minutes.md', 'text': '担当者は佐藤。期限は12月15日。'}]
+        ok, _ = validate_answer('担当者は佐藤で、期限は12月15日です。', '担当者と期限は？', hits)
+        self.assertTrue(ok)
+
+    def test_pipeline_retries_then_uses_extractive_fallback(self):
+        hits = [{'score': .4, 'source': 'minutes.md',
+                 'text': '会議の担当者は佐藤です。提出期限は12月15日です。'}]
+        calls = []
+        def broken(_prompt):
+            calls.append(1)
+            return '' if len(calls) == 1 else '全く関係のない回答です。'
+        result = answer_with_pipeline('会議の担当者と提出期限は？', hits, broken, retry=True, continuation=False, prefer_evidence_assembly=False)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(result['status'], 'evidence_assembled')
+        self.assertIn('佐藤', result['answer'])
+        self.assertIn('minutes.md', result['answer'])
+
+    def test_llm_adapter_rejects_non_loopback_endpoint(self):
+        with self.assertRaises(ValueError):
+            local_llama_generator('http://example.com:8080')
+
+    def test_llm_adapter_accepts_loopback_endpoint(self):
+        self.assertTrue(callable(local_llama_generator('http://127.0.0.1:8080')))
+
+    def test_extractive_fallback_returns_abstention_without_match(self):
+        self.assertEqual(extractive_fallback('量子暗号の方式は？', []), ABSTAIN)
+
+    def test_pipeline_defaults_to_single_generation_attempt(self):
+        hits = [{'score': .4, 'source': 'minutes.md',
+                 'text': '会議の担当者は佐藤です。提出期限は12月15日です。'}]
+        calls = []
+        result = answer_with_pipeline('会議の担当者と提出期限は？', hits,
+                                      lambda _prompt: calls.append(1) or '', continuation=False)
+        self.assertEqual(len(calls), 0)
+        self.assertEqual(result['status'], 'evidence_assembled')
+
+    def test_validator_rejects_internal_model_tags(self):
+        hits = [{'source': 'offline.md', 'text': '初回導入後はオフラインで動作する。'}]
+        self.assertEqual(validate_answer('</system_thinking> オフラインで動作します。',
+                                         'ネットワーク要件は？', hits)[1], 'internal_tag')
 
 
-@dataclass(frozen=True)
-class RetrievalDecision:
-    accepted: tuple[dict, ...]
-    rejected: tuple[dict, ...]
-    confidence: float
-    reason: str
+    def test_generation_budget_scales_with_question_shape(self):
+        self.assertEqual(generation_budget('期限はいつですか？'), 32)
+        self.assertEqual(generation_budget('担当者と期限を教えてください。'), 48)
+
+    def test_validator_rejects_token_limit_completion(self):
+        hits = [{'source': 'spec.md', 'text': '端末はi5-10310Uで、メモリは8GB RAM。'}]
+        ok, reason = validate_answer('端末はi5-10310Uで、メモリは', '端末とメモリは？',
+                                     hits, {'stopped_limit': True, 'tokens_predicted': 48, 'n_predict': 48})
+        self.assertFalse(ok)
+        self.assertEqual(reason, 'token_limit')
+
+    def test_pipeline_falls_back_on_truncated_generation(self):
+        hits = [{'score': .4, 'source': 'spec.md',
+                 'text': '対象端末はIntel i5-10310U。メモリ要件は8GB RAM。'}]
+        result = answer_with_pipeline('端末とメモリ要件は？', hits,
+            lambda _prompt: {'content': '対象端末はIntel i5-10310Uで、メモリは',
+                             'stop': False, 'tokens_predicted': 48, 'n_predict': 48}, prefer_evidence_assembly=False)
+        self.assertEqual(result['status'], 'evidence_assembled')
+        self.assertIn('8GB', result['answer'])
 
 
-def _query_terms(question: str) -> set[str]:
-    terms = set(japanese_terms(question))
-    # Generic interrogative/function bigrams add noise to short Japanese queries.
-    stop = {"何を", "何で", "何が", "です", "ます", "こと", "方法", "教え", "くだ", "さい"}
-    return terms - stop or terms
+    def test_semantic_continuation_completes_missing_deadline(self):
+        hits = [{'score': .4, 'source': 'minutes.md',
+                 'text': '会議の担当者は佐藤です。提出期限は12月15日です。'}]
+        calls = []
+        def generator(prompt):
+            calls.append(prompt)
+            if len(calls) == 1:
+                return {'content': '担当者は佐藤です。<CONTINUE>',
+                        'stop': False, 'tokens_predicted': 48, 'n_predict': 48}
+            return {'content': '提出期限は12月15日です。<END_ANSWER>',
+                    'stop': True, 'tokens_predicted': 12, 'n_predict': 24}
+        result = answer_with_pipeline('会議の担当者と提出期限は？', hits, generator, prefer_evidence_assembly=False)
+        self.assertEqual(result['status'], 'generated')
+        self.assertIn('佐藤', result['answer'])
+        self.assertIn('12月15日', result['answer'])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(result['generation_rounds']), 2)
+        self.assertIn('担当者は佐藤です。', calls[1])
+
+    def test_semantic_continuation_stops_at_round_limit(self):
+        hits = [{'score': .4, 'source': 'minutes.md',
+                 'text': '会議の担当者は佐藤です。提出期限は12月15日です。'}]
+        calls = []
+        def generator(_prompt):
+            calls.append(1)
+            return {'content': '担当者は佐藤です。<CONTINUE>',
+                    'stop': True, 'tokens_predicted': 10, 'n_predict': 24}
+        result = answer_with_pipeline('会議の担当者と提出期限は？', hits, generator,
+                                      max_continuations=1, prefer_evidence_assembly=False)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(result['status'], 'evidence_assembled')
+
+    def test_continuation_marker_is_not_exposed(self):
+        hits = [{'score': .4, 'source': 'offline.md',
+                 'text': '初回導入後はオフラインで動作する。'}]
+        result = answer_with_pipeline('初回導入後の動作は？', hits,
+            lambda _prompt: '初回導入後はオフラインで動作します。<END_ANSWER>')
+        self.assertNotIn('<END_ANSWER>', result['answer'])
+        self.assertEqual(result['status'], 'generated')
 
 
-def _overlap(question: str, text: str) -> float:
-    q = _query_terms(question)
-    if not q:
-        return 0.0
-    d = set(japanese_terms(text))
-    return len(q & d) / len(q)
+    def test_complete_answer_does_not_continue_on_token_limit_marker(self):
+        hits = [{'score': .4, 'source': 'offline.md',
+                 'text': '初回導入後はオフラインで動作する。'}]
+        calls = []
+        def generator(_prompt):
+            calls.append(1)
+            return {'content': '初回導入後はオフラインで動作します。<CONTINUE>',
+                    'stopped_limit': True, 'tokens_predicted': 48, 'n_predict': 48}
+        result = answer_with_pipeline('初回導入後の動作は？', hits, generator)
+        self.assertEqual(result['status'], 'generated')
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn('<CONTINUE>', result['answer'])
+
+    def test_unsupported_partial_answer_does_not_trigger_continuation(self):
+        hits = [{'score': .4, 'source': 'audio.md',
+                 'text': 'CPUのみでローカル実行する方式を採用する。'}]
+        calls = []
+        def generator(_prompt):
+            calls.append(1)
+            return {'content': '今日は晴れです。<CONTINUE>',
+                    'stopped_limit': True, 'tokens_predicted': 48, 'n_predict': 48}
+        result = answer_with_pipeline('CPUのみで動く実行方式は？', hits, generator)
+        self.assertEqual(result['status'], 'evidence_assembled')
+        self.assertEqual(len(calls), 0)
+        self.assertIn('CPU', result['answer'])
 
 
-def generation_budget(question: str, base_tokens: int = 48) -> int:
-    """Keep the existing 48-token ceiling; allocate fewer tokens to simple fact lookups."""
-    q = question.strip()
-    multi_attribute = bool(re.search(
-        r"(担当者.*期限|期限.*担当者|方式.*要件|要件.*方式|端末.*メモリ|"
-        r"メモリ.*端末|実行方式.*CPU|CPU.*実行方式|\sと\s|及び|ならびに|"
-        r"それぞれ|複数|一覧|比較)", q
-    ))
-    return min(base_tokens, 48) if multi_attribute or len(q) >= 28 else min(base_tokens, 32)
+    def test_complete_sentence_with_missing_slot_uses_fallback_without_continuation(self):
+        hits = [{'score': .4, 'source': 'minutes.md',
+                 'text': '会議の担当者は佐藤です。提出期限は後日調整する。'}]
+        calls = []
+        def generator(_prompt):
+            calls.append(1)
+            return {'content': '担当者は佐藤です。<CONTINUE>',
+                    'stopped_limit': True, 'tokens_predicted': 32, 'n_predict': 32}
+        result = answer_with_pipeline('会議の担当者と提出期限は？', hits, generator)
+        self.assertEqual(result['status'], 'extractive_fallback')
+        self.assertEqual(len(calls), 1)
+
+    def test_truncated_grounded_sentence_continues_without_control_marker(self):
+        hits = [{'score': .4, 'source': 'offline.md',
+                 'text': '初回導入後はオフラインで動作する。'}]
+        calls = []
+        def generator(_prompt):
+            calls.append(1)
+            if len(calls) == 1:
+                return {'content': '初回導入後はオフラインで',
+                        'stop': False, 'tokens_predicted': 24, 'n_predict': 24}
+            return {'content': '動作します。<END_ANSWER>',
+                    'stop': True, 'tokens_predicted': 8, 'n_predict': 24}
+        result = answer_with_pipeline('初回導入後の動作は？', hits, generator)
+        self.assertEqual(result['status'], 'generated')
+        self.assertEqual(len(calls), 2)
+        self.assertIn('オフラインで動作します', result['answer'])
+        self.assertTrue(result['generation_rounds'][0]['truncated'])
+
+    def test_evidence_prompt_uses_real_newlines(self):
+        prompt = build_evidence_prompt('担当者は？', [
+            {'source': 'minutes.md', 'text': '担当者は佐藤です。'}
+        ])
+        self.assertIn('\n', prompt)
+        self.assertNotIn('\\n', prompt)
 
 
-def _generation_payload(value: object) -> tuple[str, dict]:
-    if isinstance(value, dict):
-        return str(value.get("content") or ""), value
-    return str(value or ""), {}
+    def test_answer_plan_maps_required_attributes_to_source_evidence(self):
+        hits = [{
+            "score": .4, "source": "spec.md",
+            "text": "担当者は佐藤です。期限は12月15日です。URLはhttps://example.com/docs。パスはdocs/spec.mdです。"
+        }]
+        plan = build_answer_plan("担当者と期限、URL、パスは？", hits)
+        self.assertEqual(plan["requirements"], ["owner", "deadline", "url", "path"])
+        self.assertEqual(plan["missing_requirements"], [])
+        self.assertIn("佐藤", plan["evidence_mapping"]["owner"][0]["values"])
+        self.assertIn("12月15日", plan["evidence_mapping"]["deadline"][0]["values"])
+        self.assertEqual(plan["evidence_mapping"]["url"][0]["values"][0], "https://example.com/docs")
+        self.assertIn("docs/spec.md", plan["evidence_mapping"]["path"][0]["values"])
+
+    def test_evidence_assembly_builds_answer_from_all_supported_requirements(self):
+        hits = [{
+            "score": .4, "source": "minutes.md",
+            "text": "担当者は佐藤です。期限は12月15日です。URLはhttps://example.com/docs。パスはdocs/spec.mdです。"
+        }]
+        plan = build_answer_plan("担当者と期限、URL、パスは？", hits)
+        answer = assemble_evidence_answer(plan)
+        self.assertIn("担当者: 佐藤", answer)
+        self.assertIn("期限: 12月15日", answer)
+        self.assertIn("https://example.com/docs", answer)
+        self.assertIn("docs/spec.md", answer)
+        self.assertIn("minutes.md", answer)
+
+    def test_evidence_assembly_refuses_incomplete_plans(self):
+        plan = build_answer_plan("担当者と期限は？", [
+            {"score": .4, "source": "minutes.md", "text": "担当者は佐藤です。"}
+        ])
+        self.assertIsNone(assemble_evidence_answer(plan))
+
+    def test_pipeline_uses_evidence_assembly_when_generator_unavailable(self):
+        hits = [{
+            "score": .4, "source": "minutes.md",
+            "text": "担当者は佐藤です。期限は12月15日です。"
+        }]
+        result = answer_with_pipeline("会議の担当者と期限を教えてください", hits, None)
+        self.assertEqual(result["status"], "evidence_assembled")
+        self.assertIn("佐藤", result["answer"])
+        self.assertIn("12月15日", result["answer"])
+        self.assertEqual(result["generation_rounds"], 0)
+
+    def test_answer_plan_tracks_missing_evidence_without_inventing_values(self):
+        plan = build_answer_plan("担当者と期限は？", [
+            {"score": .4, "source": "minutes.md", "text": "担当者は佐藤です。"}
+        ])
+        self.assertEqual(plan["missing_requirements"], ["deadline"])
+        self.assertFalse(plan["validation"]["requirements_complete"])
+
+    def test_validator_rejects_unsupported_url_and_path(self):
+        hits = [{"source": "spec.md", "text": "URLはhttps://example.com/docs。パスはdocs/spec.mdです。"}]
+        self.assertEqual(validate_answer("URLはhttps://evil.example/docsです。", "URLは？", hits)[1],
+                         "unsupported_url")
+        self.assertEqual(validate_answer("パスはprivate/secret.txtです。", "パスは？", hits)[1],
+                         "unsupported_path")
+
+    def test_progress_summary_only_marks_validation_after_it_runs(self):
+        plan = build_answer_plan("担当者は？", [
+            {"score": .4, "source": "minutes.md", "text": "担当者は佐藤です。"}
+        ])
+        pending = build_progress_summary(plan)
+        complete = build_progress_summary(plan, validated=True)
+        self.assertFalse(pending["checks"][-1]["done"])
+        self.assertTrue(complete["checks"][-1]["done"])
+
+    def test_evidence_prompt_explicitly_plans_requirements_and_preserves_identifiers(self):
+        hits = [{
+            "source": "spec.md",
+            "text": "担当者は佐藤です。期限は12月15日です。URLはhttps://example.com/docs。パスはdocs/spec.mdです。"
+        }]
+        prompt = build_evidence_prompt("担当者と期限、URL、パスは？", hits)
+        self.assertIn("要求属性:", prompt)
+        self.assertIn("owner", prompt)
+        self.assertIn("deadline", prompt)
+        self.assertIn("URL", prompt)
+        self.assertIn("パス", prompt)
+        self.assertIn("https://example.com/docs", prompt)
+        self.assertIn("docs/spec.md", prompt)
+        self.assertIn("文字列を改変せず正確に転記", prompt)
 
 
+    def test_generation_exception_is_recorded_without_retry_loop(self):
+        hits = [{'score': .4, 'source': 'offline.md',
+                 'text': '初回導入後はオフラインで動作する。'}]
+        calls = []
+        def broken(_prompt):
+            calls.append(1)
+            raise TimeoutError("local model timed out")
+        result = answer_with_pipeline('初回導入後の動作は？', hits, broken,
+                                      retry=True, continuation=True, max_continuations=2,
+                                      prefer_evidence_assembly=False)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result['status'], 'extractive_fallback')
+        self.assertEqual(result['generation_rounds'][0]['state'], 'generation_error')
+        self.assertEqual(result['reason'], 'generation_error')
 
-END_MARKER = "<END_ANSWER>"
-CONTINUE_MARKER = "<CONTINUE>"
+    def test_generation_loop_records_grounded_continuation_states(self):
+        hits = [{'score': .4, 'source': 'minutes.md',
+                 'text': '会議の担当者は佐藤です。提出期限は12月15日です。'}]
+        calls = []
+        def generator(_prompt):
+            calls.append(1)
+            if len(calls) == 1:
+                return {'content': '担当者は佐藤です。<CONTINUE>',
+                        'stopped_limit': True, 'tokens_predicted': 48, 'n_predict': 48}
+            return {'content': '提出期限は12月15日です。<END_ANSWER>',
+                    'stop': True, 'tokens_predicted': 12, 'n_predict': 24}
+        result = answer_with_pipeline('会議の担当者と提出期限は？', hits, generator,
+                                      prefer_evidence_assembly=False)
+        self.assertEqual(result['status'], 'generated')
+        self.assertEqual([r['state'] for r in result['generation_rounds']],
+                         ['continue', 'completed'])
+        self.assertTrue(result['generation_rounds'][0]['truncated'])
 
-
-def _strip_control_markers(text: str) -> tuple[str, str | None]:
-    state = "continue" if CONTINUE_MARKER in text else ("end" if END_MARKER in text else None)
-    cleaned = text.replace(END_MARKER, "").replace(CONTINUE_MARKER, "").strip()
-    return cleaned, state
-
-
-def _required_slots(question: str) -> dict[str, re.Pattern]:
-    q = question
-    slots = {}
-    if re.search(r"担当者|責任者|氏名|誰|だれ", q):
-        slots["owner"] = re.compile(r"担当者|責任者|氏名|[一-龥]{2,4}")
-    if re.search(r"期限|締切|期日|いつまで", q):
-        slots["deadline"] = re.compile(r"\d{1,4}年|\d{1,2}月|\d{1,2}日|期限|締切|期日")
-    if re.search(r"端末|CPU|プロセッサ", q, re.I):
-        slots["device"] = re.compile(r"i[3579]-?\d{3,5}[A-Za-z]?|Windows|CPU|CPU|プロセッサ", re.I)
-    if re.search(r"メモリ|RAM|容量", q, re.I):
-        slots["memory"] = re.compile(r"\d+(?:\.\d+)?\s*(?:GB|MB|GiB|MiB|RAM)", re.I)
-    if re.search(r"方式|方法|構成|どうやって|何を使", q):
-        slots["method"] = re.compile(r"方式|方法|構成|使用|利用|実行|FTS5|2-gram|CPU|ローカル|オフライン")
-    if re.search(r"何件|何人|何個|何回|何％|割合|数値|件数|人数", q):
-        slots["quantity"] = re.compile(r"\d+(?:[.,]\d+)?")
-    if re.search(r"場所|地域|住所|どこ", q):
-        slots["location"] = re.compile(r"場所|地域|住所|市|町|村|県")
-    return slots
-
-
-def _requirement_names(question: str) -> list[str]:
-    names = list(_required_slots(question))
-    if re.search(r"URL|リンク|ウェブサイト|アドレス", question, re.I):
-        names.append("url")
-    if re.search(r"パス|ファイル名|保存先|ディレクトリ", question):
-        names.append("path")
-    return list(dict.fromkeys(names))
-
-
-def build_answer_plan(question: str, hits: Iterable[dict]) -> dict:
-    """Build a deterministic, evidence-linked answer plan without another model call."""
-    sources = list(hits)
-    requirements = _requirement_names(question)
-    q_terms = _query_terms(question)
-    mapping = {}
-    for slot in requirements:
-        candidates = []
-        for hit in sources:
-            text = str(hit.get("text", ""))
-            if slot == "url":
-                matched = re.findall(r"""https?://[^\s<>"'、。]+""", text)
-            elif slot == "path":
-                matched = re.findall(r"(?<![A-Za-z0-9./:])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+", text)
-            else:
-                matched = _slot_values(slot, text)
-            if matched:
-                candidates.append({
-                    "source": str(hit.get("source", "unknown")),
-                    "values": list(dict.fromkeys(matched))[:4],
-                    "evidence": text[:360],
-                })
-        mapping[slot] = candidates
-    missing = [slot for slot in requirements if not mapping.get(slot)]
-    # Keep evidence ordering deterministic: requested-attribute coverage first,
-    # then lexical question overlap, then the retrieval score.
-    ranked = []
-    for index, hit in enumerate(sources):
-        text = str(hit.get("text", ""))
-        covered = sum(1 for slot in requirements if any(
-            item["source"] == str(hit.get("source", "unknown"))
-            for item in mapping.get(slot, [])
-        ))
-        lexical = len(q_terms & set(japanese_terms(text))) / max(1, len(q_terms))
-        ranked.append((covered, lexical, float(hit.get("score", 0.0)), -index, hit))
-    ranked.sort(key=lambda item: item[:4], reverse=True)
-    return {
-        "question": question,
-        "requirements": requirements,
-        "evidence_mapping": mapping,
-        "missing_requirements": missing,
-        "answer_order": requirements,
-        "selected_sources": [str(item[4].get("source", "unknown")) for item in ranked],
-        "validation": {
-            "evidence_supported": bool(sources),
-            "requirements_complete": not missing,
-            "literal_integrity": "pending",
-        },
-    }
+    def test_device_slot_preserves_cpu_model_suffix(self):
+        hits = [{'score': .4, 'source': 'spec.md',
+                 'text': '対象端末のCPUはIntel i5-10310U。'}]
+        plan = build_answer_plan('対象端末のCPUは？', hits)
+        self.assertIn('i5-10310U', plan['evidence_mapping']['device'][0]['values'])
 
 
-def assemble_evidence_answer(plan: dict) -> str | None:
-    """Assemble a concise answer only from values explicitly extracted from evidence."""
-    labels = {
-        "owner": "担当者", "deadline": "期限", "device": "端末",
-        "memory": "メモリ", "method": "方式", "quantity": "数量",
-        "location": "場所", "url": "URL", "path": "パス",
-    }
-    requirements = list(plan.get("requirements", []))
-    if not requirements or plan.get("missing_requirements"):
-        return None
-    lines = []
-    for slot in requirements:
-        entries = plan.get("evidence_mapping", {}).get(slot, [])
-        values = []
-        sources = []
-        for entry in entries:
-            for value in entry.get("values", []):
-                if value not in values:
-                    values.append(value)
-            source = str(entry.get("source", "")).strip()
-            if source and source not in sources:
-                sources.append(source)
-        if not values:
-            return None
-        rendered = "、".join(values[:3])
-        provenance = "、".join(sources[:2])
-        suffix = f"（出典: {provenance}）" if provenance else ""
-        lines.append(f"{labels.get(slot, slot)}: {rendered}{suffix}")
-    return "\n".join(lines) + "。"
-
-
-def build_progress_summary(plan: dict, *, validated: bool = False) -> dict:
-    """UI-neutral status summary; expose only completed checks, never hidden reasoning."""
-    return {
-        "title": "回答を整理しました",
-        "checks": [
-            {"id": "requirements", "label": "質問の要求項目を抽出", "done": True},
-            {"id": "evidence", "label": "根拠資料から該当情報を選択", "done": bool(plan.get("evidence_mapping"))},
-            {"id": "coverage", "label": "回答項目の不足を確認", "done": True},
-            {"id": "integrity", "label": "数値・URL・パスの整合性を検証", "done": validated},
-        ],
-        "missing_requirements": list(plan.get("missing_requirements", [])),
-    }
-
-
-def _slot_values(slot: str, evidence: str) -> list[str]:
-    patterns = {
-        "owner": r"(?:担当者|責任者|氏名)\s*(?:は|:|：)?\s*([一-龥ぁ-んァ-ヶA-Za-z]{2,8}?)(?:です|さん|氏|が|に|へ|を|まで|[。,.、]|$)",
-        "deadline": r"(?:\d{1,4}年)?\d{1,2}月\d{1,2}日|\d{1,2}月\d{1,2}日",
-        "device": r"i[3579]-?\d{3,5}[A-Za-z]?|Windows\s*\d+|CPU(?:のみ)?",
-        "memory": r"\d+(?:\.\d+)?\s*(?:GB|MB|GiB|MiB|RAM)",
-        "quantity": r"\d+(?:[.,]\d+)?",
-        "method": r"SQLite FTS5|FTS5|2-gram|BM25|n-gram|ベクトル検索|ローカル実行|CPUのみ",
-        "url": r"""https?://[^\s<>"'、。]+""",
-        "path": r"(?<![A-Za-z0-9./:])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+",
-    }
-    pattern = patterns.get(slot)
-    return list(dict.fromkeys(re.findall(pattern, evidence, re.I))) if pattern else []
-
-
-def _missing_slots(question: str, answer: str, hits: Iterable[dict]) -> list[str]:
-    evidence = " ".join(str(h.get("text", "")) for h in hits)
-    missing = []
-    for slot in _requirement_names(question):
-        pattern = _required_slots(question).get(slot, re.compile(r"https?://" if slot == "url" else r"/"))
-
-        values = _slot_values(slot, evidence)
-        if values:
-            if not any(value.lower() in answer.lower() for value in values):
-                missing.append(slot)
-        elif not pattern.search(answer):
-            missing.append(slot)
-    return missing
-
-
-def _is_truncated(metadata: dict) -> bool:
-    if not metadata:
-        return False
-    if metadata.get("stopped_limit") is True or metadata.get("truncated") is True:
-        return True
-    if metadata.get("stop_type") == "limit":
-        return True
-    if metadata.get("stop_type") in {"eos", "word"}:
-        return False
-    budget = int(metadata.get("n_predict") or metadata.get("budget") or 0)
-    predicted = int(metadata.get("tokens_predicted") or metadata.get("generated_tokens") or 0)
-    if budget and predicted >= budget and not (
-        metadata.get("stopped_eos") is True or metadata.get("stopped_word") is True
-    ):
-        return True
-    return False
-
-
-def _append_without_overlap(previous: str, addition: str) -> str:
-    addition = addition.strip()
-    if not previous:
-        return addition
-    if not addition or addition in previous:
-        return previous
-    max_overlap = min(len(previous), len(addition), 160)
-    for size in range(max_overlap, 7, -1):
-        if previous[-size:] == addition[:size]:
-            return previous + addition[size:]
-    # Avoid a repeated first sentence when the model ignores the continuation instruction.
-    first = re.split(r"(?<=[。！？!?])", addition, maxsplit=1)[0].strip()
-    if first and first in previous:
-        addition = addition[len(first):].lstrip(" 、，。\n")
-    return previous + ("" if not addition else ("\n" if previous.endswith(("。", "！", "？", "\n")) else "") + addition)
-
-
-def _continuation_prompt(base_prompt: str, accumulated: str, missing: list[str]) -> str:
-    return (
-        base_prompt + accumulated +
-        "\n\n[CONTINUATION]\n前回の回答に続けてください。既出内容を繰り返さず、"
-        "不足情報だけを根拠から補ってください。"
-        f"未充足項目: {', '.join(missing) if missing else '文章の完結'}。"
-        f"意味的に完結したら {END_MARKER}、続きが必要なら {CONTINUE_MARKER} を末尾に付けてください。\n"
-    )
-
-
-def retrieval_gate(
-    question: str,
-    hits: Iterable[dict],
-    *,
-    min_score: float = 0.08,
-    min_overlap: float = 0.10,
-    limit: int = 3,
-) -> RetrievalDecision:
-    """Filter lexical false positives before generation; no model or embedding required."""
-    ranked = []
-    rejected = []
-    for hit in hits:
-        overlap = _overlap(question, hit.get("text", ""))
-        score = float(hit.get("score", 0.0))
-        item = {**hit, "query_overlap": round(overlap, 4)}
-        # Either a strong combined rank or a minimum lexical coverage is required.
-        # A strong lexical match may rescue a borderline BM25 score. This is
-        # intentionally conservative: weak overlap never passes on score alone.
-        if (score >= min_score and overlap >= min_overlap) or (
-            score >= min_score * 0.65 and overlap >= max(0.25, min_overlap * 2.5)
-        ):
-            ranked.append(item)
-        else:
-            rejected.append(item)
-    ranked.sort(key=lambda x: (x["query_overlap"], float(x.get("score", 0))), reverse=True)
-    accepted = tuple(ranked[:max(1, limit)])
-    confidence = max((x["query_overlap"] for x in accepted), default=0.0)
-    reason = "relevant_evidence" if accepted else "no_relevant_evidence"
-    return RetrievalDecision(accepted, tuple(rejected), confidence, reason)
-
-
-def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 1400) -> str:
-    """Compact evidence-first prompt with explicit abstention and answer-shape rules."""
-    hits = list(hits)
-    plan = build_answer_plan(question, hits)
-    source_order = {source: index for index, source in enumerate(plan["selected_sources"])}
-    hits = sorted(hits, key=lambda hit: source_order.get(str(hit.get("source", "unknown")), len(source_order)))
-    blocks = []
-    used = 0
-    for i, hit in enumerate(hits, 1):
-        text = re.sub(r"\s+", " ", str(hit.get("text", ""))).strip()
-        source = str(hit.get("source", "unknown"))
-        block = f"[根拠{i}] {source}: {text}"
-        remaining = max_chars - used
-        if remaining <= 0:
-            break
-        blocks.append(block[:remaining])
-        used += min(len(block), remaining)
-    evidence = "\\n".join(blocks) if blocks else "（根拠なし）"
-    requirements = list(plan["requirements"])
-    requirement_text = "、".join(requirements) if requirements else "質問の主語・条件・結論"
-    plan_lines = []
-    for slot in requirements:
-        values = []
-        for item in plan["evidence_mapping"].get(slot, []):
-            values.extend(item["values"])
-        plan_lines.append(f"{slot}: {', '.join(dict.fromkeys(values)) if values else '根拠なし'}")
-    plan_text = "\\n".join(plan_lines)
-    return (
-        "日本語で回答。根拠だけを使い、最初に質問を要求属性へ分解し、根拠文から各属性の値を対応付けて回答する。"
-        "要求属性は漏れなく満たすこと。複数項目は短い箇条書きまたは「、」で列挙する。"
-        "根拠に明記された数値・固有名詞・URL・パスは文字列を改変せず正確に転記する。"
-        "根拠にない推測、一般論、補足説明は禁止。質問文や見出しを繰り返さない。"
-        "回答が完結したら末尾に <END_ANSWER>、続きが必要なら <CONTINUE> を付ける。"
-        "根拠がなければ「文書に記載がありません」と答える。\\n"
-        f"要求属性:{requirement_text}\\n回答計画:{plan_text}\\nQ:{question}\\n根拠:{evidence}\\nA:"
-    )
-
-
-def validate_answer(answer: str, question: str, hits: Iterable[dict], generation: dict | None = None) -> tuple[bool, str]:
-    """Conservative deterministic guard against empty, off-topic and unsupported numeric output."""
-    cleaned = re.sub(r"^回答[:：]?\s*", "", (answer or "").strip())
-    cleaned = re.sub(r"\n?\[\d+\]\s*$", "", cleaned).strip()
-    if not cleaned:
-        return False, "empty"
-    if generation:
-        # llama.cpp reports stop=true for EOS/stop-word termination. A false
-        # value with all allocated tokens consumed is a hard truncation signal.
-        budget = int(generation.get("n_predict") or generation.get("budget") or 0)
-        predicted = int(generation.get("tokens_predicted") or generation.get("generated_tokens") or 0)
-        stopped = generation.get("stop")
-        if stopped is False or (budget and predicted >= budget and stopped is not True):
-            return False, "token_limit"
-    if re.search(r"</?(?:system_thinking|think|answer|analysis)[^>]*>", cleaned, re.I):
-        return False, "internal_tag"
-    if re.search(r"(?:質問|根拠文書|Q|A)[:：]\s*$", cleaned):
-        return False, "incomplete_tail"
-    if cleaned in {"文書に記載がありません", ABSTAIN}:
-        return True, "abstention"
-    sources = list(hits)
-    context = " ".join(str(h.get("text", "")) for h in sources)
-    answer_terms = set(japanese_terms(cleaned))
-    context_terms = set(japanese_terms(context))
-    if not answer_terms or len(answer_terms & context_terms) / max(1, len(answer_terms)) < 0.45:
-        return False, "insufficient_evidence_overlap"
-    # URLs and relative file paths are exact identifiers and must exist in evidence.
-    answer_urls = re.findall(r"""https?://[^\s<>"'、。]+""", cleaned)
-    context_urls = set(re.findall(r"""https?://[^\s<>"'、。]+""", context))
-    if any(value not in context_urls for value in answer_urls):
-        return False, "unsupported_url"
-    answer_paths = re.findall(r"(?<![A-Za-z0-9./:])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+", cleaned)
-    context_paths = set(re.findall(r"(?<![A-Za-z0-9./:])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+", context))
-    if any(value not in context_paths for value in answer_paths):
-        return False, "unsupported_path"
-    # Numeric claims are high-risk in meeting minutes and specifications.
-    numbers = re.findall(r"(?<![A-Za-z])\d+(?:[.,]\d+)?(?:%|GB|MB|日|月|年|時|分)?", cleaned, re.I)
-    context_numbers = set(re.findall(r"(?<![A-Za-z])\d+(?:[.,]\d+)?(?:%|GB|MB|日|月|年|時|分)?", context, re.I))
-    if any(n not in context_numbers for n in numbers):
-        return False, "unsupported_number"
-    q_terms = _query_terms(question)
-    if q_terms and len(answer_terms & q_terms) == 0 and len(answer_terms & context_terms) < 3:
-        return False, "question_mismatch"
-    return True, "accepted"
-
-
-def extractive_fallback(question: str, hits: Iterable[dict], max_sentences: int = 3) -> str:
-    """Return the best source sentences, preserving provenance and avoiding free-form claims."""
-    candidates = []
-    q_terms = _query_terms(question)
-    attribute_patterns = {
-        "担当者": r"担当者|氏名|責任者", "期限": r"期限|締切|期日|まで",
-        "数値": r"\d+(?:月|日|年|GB|MB|%)?", "方式": r"方式|方法|構成|手段",
-        "要件": r"要件|条件|必要|対象", "場所": r"場所|地域|住所",
-    }
-    requested = [name for name, pattern in attribute_patterns.items()
-                 if re.search(pattern, question)]
-    for hit in hits:
-        text = str(hit.get("text", "")).strip()
-        for sentence in re.split(r"(?<=[。！？!?])\s*|\n+", text):
-            sentence = sentence.strip()
-            if not sentence:
-                continue
-            terms = set(japanese_terms(sentence))
-            coverage = len(q_terms & terms) / max(1, len(q_terms))
-            attribute_hits = sum(
-                1 for name in requested
-                if (name == "数値" and re.search(r"\d", sentence)) or
-                   (name != "数値" and re.search(attribute_patterns[name], sentence))
-            )
-            score = coverage + 0.20 * attribute_hits
-            if coverage > 0 or attribute_hits:
-                candidates.append((score, len(sentence), sentence, hit.get("source", "unknown")))
-    candidates.sort(key=lambda x: (x[0], -x[1]), reverse=True)
-    selected = []
-    seen = set()
-    for _, _, sentence, source in candidates:
-        if sentence in seen:
-            continue
-        seen.add(sentence)
-        selected.append(f"{sentence}（出典: {source}）")
-        if len(selected) >= max_sentences:
-            break
-    return "\n".join(selected) if selected else ABSTAIN
-
-
-def answer_with_pipeline(
-    question: str,
-    hits: Iterable[dict],
-    generator: Callable[[str], str] | None = None,
-    *,
-    retry: bool = False,
-    continuation: bool = True,
-    max_continuations: int = 2,
-    prefer_evidence_assembly: bool = True,
-) -> dict:
-    """Evidence gate -> bounded semantic continuation -> validation -> extractive fallback."""
-    decision = retrieval_gate(question, hits)
-    plan = build_answer_plan(question, decision.accepted)
-    if not decision.accepted:
-        return {"answer": ABSTAIN, "status": "abstained", "reason": decision.reason,
-                "retrieval": decision, "generation_rounds": 0,
-                "answer_plan": plan, "progress": build_progress_summary(plan)}
-    selected = list(decision.accepted)
-    if prefer_evidence_assembly:
-        assembled = assemble_evidence_answer(plan)
-        assembled_valid = bool(assembled) and validate_answer(assembled, question, selected)[0]
-        if assembled_valid:
-            return {"answer": assembled, "status": "evidence_assembled",
-                    "reason": "pre_generation_all_requirements_have_direct_evidence",
-                    "retrieval": decision, "generation_rounds": 0, "missing_slots": [],
-                    "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
-    if generator is None:
-        assembled = assemble_evidence_answer(plan)
-        assembled_valid = bool(assembled) and validate_answer(assembled, question, selected)[0]
-        if assembled_valid:
-            return {"answer": assembled, "status": "evidence_assembled",
-                    "reason": "all_requirements_have_direct_evidence", "retrieval": decision,
-                    "generation_rounds": 0, "missing_slots": [],
-                    "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
-        return {"answer": extractive_fallback(question, selected), "status": "extractive_fallback",
-                "reason": "generation_unavailable", "retrieval": decision, "generation_rounds": 0,
-                "answer_plan": plan, "progress": build_progress_summary(plan)}
-
-    base_prompt = build_evidence_prompt(question, selected)
-    accumulated = ""
-    rounds = []
-    last_reason = "empty"
-    max_rounds = 1 + (max(0, min(2, max_continuations)) if continuation else 0)
-
-    # Explicit bounded generation state machine. A round may continue only when
-    # the partial answer is grounded and retrieved evidence can fill a missing slot.
-    state = "initial"
-    for round_index in range(max_rounds):
-        if round_index == 0:
-            prompt = base_prompt
-            state = "generating_initial"
-        else:
-            missing_before = _missing_slots(question, accumulated, selected)
-            prompt = _continuation_prompt(base_prompt, accumulated, missing_before)
-            state = "generating_continuation"
-        try:
-            raw = generator(prompt)
-            candidate, metadata = _generation_payload(raw)
-        except Exception as exc:
-            rounds.append({
-                "round": round_index + 1, "tokens": 0, "budget": 0,
-                "truncated": False, "marker": None, "state": "generation_error",
-                "error": type(exc).__name__,
-            })
-            last_reason = "generation_error"
-            state = "failed"
-            break
-
-        candidate, marker = _strip_control_markers(candidate)
-        truncated = _is_truncated(metadata)
-        rounds.append({
-            "round": round_index + 1,
-            "tokens": int(metadata.get("tokens_predicted") or metadata.get("generated_tokens") or 0),
-            "budget": int(metadata.get("n_predict") or metadata.get("budget") or 0),
-            "truncated": truncated,
-            "marker": marker,
-            "state": "received",
-        })
-
-        previous = accumulated
-        if candidate:
-            accumulated = _append_without_overlap(accumulated, candidate)
-        valid, last_reason = validate_answer(accumulated, question, selected)
-        missing = _missing_slots(question, accumulated, selected)
-        text_complete = bool(re.search(r"[。！？!?）」』】]$", accumulated.strip()))
-        if valid and not missing and text_complete:
-            rounds[-1]["state"] = "completed"
-            state = "completed"
-            return {"answer": accumulated.strip(), "status": "generated",
-                    "reason": "semantic_completion", "retrieval": decision,
-                    "generation_rounds": rounds, "missing_slots": [],
-                    "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
-
-        if not continuation or round_index + 1 >= max_rounds:
-            rounds[-1]["state"] = "round_limit" if round_index + 1 >= max_rounds else "single_pass"
-            state = "exhausted"
-            break
-        if not accumulated or accumulated == previous:
-            rounds[-1]["state"] = "no_progress"
-            state = "stalled"
-            break
-
-        # Do not ask the model to invent absent facts. Every missing requirement
-        # must have at least one concrete value in retrieved evidence.
-        evidence_text = " ".join(str(hit.get("text", "")) for hit in selected)
-        continuable_missing = [slot for slot in missing if _slot_values(slot, evidence_text)]
-        if missing and len(continuable_missing) != len(missing):
-            rounds[-1]["state"] = "missing_evidence"
-            state = "blocked"
-            break
-
-        # A continuation is useful only when the accumulated text itself is
-        # evidence-aligned. A marker or truncation flag alone never authorizes it.
-        answer_terms = set(japanese_terms(accumulated))
-        evidence_terms = set(japanese_terms(evidence_text))
-        overlap = len(answer_terms & evidence_terms) / max(1, len(answer_terms))
-        unsupported_numbers = re.findall(
-            r"(?<![A-Za-z])\d+(?:[.,]\d+)?(?:%|GB|MB|日|月|年|時|分)?",
-            accumulated, re.I
-        )
-        evidence_numbers = set(re.findall(
-            r"(?<![A-Za-z])\d+(?:[.,]\d+)?(?:%|GB|MB|日|月|年|時|分)?",
-            evidence_text, re.I
-        ))
-        if overlap < 0.45 or any(value not in evidence_numbers for value in unsupported_numbers):
-            rounds[-1]["state"] = "ungrounded_partial"
-            state = "blocked"
-            break
-
-        # Missing evidence-backed slots take priority. Otherwise continue only
-        # when the model explicitly requested continuation or hit its token cap.
-        should_continue = bool(continuable_missing) or (marker == "continue" and not text_complete)
-        if not should_continue:
-            rounds[-1]["state"] = "model_finished"
-            state = "finished_incomplete"
-            break
-        rounds[-1]["state"] = "continue"
-        state = "continuing"
-
-    if retry and not accumulated and state != "failed":
-        try:
-            raw = generator(base_prompt + "\\n根拠中の回答可能な事実だけを簡潔に回答してください。")
-            candidate, _ = _generation_payload(raw)
-            candidate, _ = _strip_control_markers(candidate)
-            accumulated = candidate
-        except Exception:
-            pass
-    valid, validation_reason = validate_answer(accumulated, question, selected)
-    if state != "failed":
-        last_reason = validation_reason
-    missing = _missing_slots(question, accumulated, selected)
-    if valid and not missing and re.search(r"[。！？!?）」』】]$", accumulated.strip()):
-        return {"answer": accumulated.strip(), "status": "generated",
-                "reason": "semantic_completion", "retrieval": decision,
-                "generation_rounds": rounds, "missing_slots": [],
-                "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
-    assembled = assemble_evidence_answer(plan)
-    assembled_valid = bool(assembled) and validate_answer(assembled, question, selected)[0]
-    if assembled_valid:
-        return {"answer": assembled, "status": "evidence_assembled",
-                "reason": "generation_incomplete_but_requirements_have_direct_evidence",
-                "retrieval": decision, "generation_rounds": rounds, "missing_slots": [],
-                "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
-    fallback = extractive_fallback(question, selected, max_sentences=4)
-    return {"answer": fallback, "status": "extractive_fallback",
-            "reason": last_reason if last_reason != "accepted" else "incomplete_answer",
-            "retrieval": decision, "generation_rounds": rounds, "missing_slots": missing,
-            "answer_plan": plan, "progress": build_progress_summary(plan, validated=valid)}
-
-
-def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: int = 48,
-                          timeout: int = 300) -> Callable[[str], dict]:
-    """Create an offline-only adapter for a locally running llama.cpp server."""
-    from urllib.parse import urlparse
-    parsed = urlparse(endpoint)
-    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-        raise ValueError("LLM endpoint must be a local HTTP loopback address")
-    url = endpoint.rstrip("/") + "/completion"
-
-    def generate(prompt: str) -> dict:
-        question = prompt.split("\nQ:", 1)[-1].split("\n根拠:", 1)[0]
-        budget = min(24, max_tokens) if "[CONTINUATION]" in prompt else generation_budget(question, max_tokens)
-        payload = json.dumps({
-            "prompt": prompt, "n_predict": budget, "temperature": 0.0,
-            "top_k": 1, "top_p": 1.0, "seed": 42, "cache_prompt": True,
-        }, ensure_ascii=False).encode("utf-8")
-        request = urllib.request.Request(url, data=payload,
-            headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = json.loads(response.read().decode("utf-8"))
-        return {"content": str(body.get("content") or ""), "stop": body.get("stop"),
-                "stopped_eos": body.get("stopped_eos"), "stopped_word": body.get("stopped_word"),
-                "stopped_limit": body.get("stopped_limit"), "stop": body.get("stop"),
-                "tokens_predicted": body.get("tokens_predicted"), "n_predict": budget}
-    return generate
+if __name__ == '__main__':
+    unittest.main()
