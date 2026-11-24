@@ -516,5 +516,17 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn("Q:会議の担当者と提出期限は？\n根拠:", calls[1])
 
 
+    def test_legacy_continuation_marker_and_echoed_evidence_header_are_removed(self):
+        from rag.answering import _strip_control_markers, _clean_generation_delta
+        cleaned, state = _strip_control_markers("不足情報です。<CONTINUATION>")
+        self.assertEqual(cleaned, "不足情報です。")
+        self.assertEqual(state, "continue")
+        delta = _clean_generation_delta(
+            "根拠資料:\\n[根拠1] minutes.md: 担当者は佐藤です。\\nA:期限は12月15日です。",
+            "担当者と期限は？",
+        )
+        self.assertEqual(delta, "期限は12月15日です。")
+
+
 if __name__ == '__main__':
     unittest.main()
