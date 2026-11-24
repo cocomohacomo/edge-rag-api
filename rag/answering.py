@@ -152,6 +152,19 @@ def _missing_relations(question: str, answer: str, hits: Iterable[dict]) -> list
     return missing
 
 
+def _numeric_claim_diagnostics(answer: str, hits: Iterable[dict]) -> dict:
+    """Expose exact unsupported numeric tokens without weakening strict validation."""
+    context = " ".join(str(hit.get("text", "")) for hit in hits)
+    pattern = r"(?<![A-Za-z])\d+(?:[.,]\d+)?(?:%|GB|MB|GiB|MiB|日|月|年|時|分)?"
+    answer_numbers = list(dict.fromkeys(re.findall(pattern, answer or "", re.I)))
+    evidence_numbers = list(dict.fromkeys(re.findall(pattern, context, re.I)))
+    return {
+        "answer_numeric_claims": answer_numbers,
+        "evidence_numeric_claims": evidence_numbers,
+        "unsupported_numeric_claims": [value for value in answer_numbers if value not in evidence_numbers],
+    }
+
+
 def build_answer_plan(question: str, hits: Iterable[dict]) -> dict:
     """Build a deterministic, evidence-linked answer plan without another model call."""
     sources = list(hits)
@@ -589,6 +602,7 @@ def answer_with_pipeline(
         missing = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
         text_complete = marker == "end" or bool(re.search(r"[。！？!?）」』】]$", accumulated.strip()))
         rounds[-1]["validation_reason"] = last_reason
+        rounds[-1]["numeric_diagnostics"] = _numeric_claim_diagnostics(accumulated, selected)
         rounds[-1]["completion_signal"] = marker or ("punctuation" if text_complete else None)
         if valid and not missing and text_complete:
             rounds[-1]["state"] = "completed"
@@ -677,10 +691,18 @@ def answer_with_pipeline(
                 "retrieval": decision, "generation_rounds": rounds, "missing_slots": [],
                 "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
     fallback = extractive_fallback(question, selected, max_sentences=4)
+    fallback_missing_slots = _missing_slots(question, fallback, selected)
+    fallback_missing_relations = _missing_relations(question, fallback, selected)
+    fallback_complete = not fallback_missing_slots and not fallback_missing_relations
+    fallback_reason = (last_reason if last_reason != "accepted" else "incomplete_answer")
     return {"answer": fallback, "status": "extractive_fallback",
-            "reason": last_reason if last_reason != "accepted" else "incomplete_answer",
+            "reason": fallback_reason,
             "retrieval": decision, "generation_rounds": rounds, "missing_slots": missing,
-            "answer_plan": plan, "progress": build_progress_summary(plan, validated=valid)}
+            "fallback_validation": {"complete": fallback_complete,
+                "missing_slots": fallback_missing_slots,
+                "missing_relations": fallback_missing_relations},
+            "numeric_diagnostics": _numeric_claim_diagnostics(accumulated, selected),
+            "answer_plan": plan, "progress": build_progress_summary(plan, validated=valid and not missing)}
 
 
 def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: int = 48,
