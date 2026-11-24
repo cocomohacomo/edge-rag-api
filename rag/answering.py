@@ -61,8 +61,11 @@ CONTINUE_MARKER = "<CONTINUE>"
 
 
 def _strip_control_markers(text: str) -> tuple[str, str | None]:
-    state = "continue" if CONTINUE_MARKER in text else ("end" if END_MARKER in text else None)
-    cleaned = text.replace(END_MARKER, "").replace(CONTINUE_MARKER, "").strip()
+    legacy_continue = "<CONTINUATION>"
+    state = ("continue" if CONTINUE_MARKER in text or legacy_continue in text
+             else ("end" if END_MARKER in text else None))
+    cleaned = (text.replace(END_MARKER, "").replace(CONTINUE_MARKER, "")
+               .replace(legacy_continue, "").strip())
     return cleaned, state
 
 
@@ -356,7 +359,7 @@ def _clean_generation_delta(candidate: str, question: str) -> str:
         value = line.strip()
         if not value or value == "[CONTINUATION]":
             continue
-        if re.match(r"^(?:Q|質問|根拠|回答計画|要求属性)[:：]", value, re.I):
+        if re.match(r"^(?:Q|質問|根拠資料?|回答計画|要求属性)[:：]", value, re.I):
             continue
         value = re.sub(r"^(?:A|回答)[:：]\s*", "", value, flags=re.I)
         if question and question in value:
