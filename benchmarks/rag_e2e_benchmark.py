@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rag.core import Store
-from rag.answering import answer_with_pipeline, generation_budget, _missing_slots, _missing_relations
+from rag.answering import answer_with_pipeline, generation_budget, _missing_slots, _missing_relations, _generation_contamination_reason
 from rag.retrieval_v2 import search_with_diagnostics
 
 CASES = [
@@ -74,7 +74,8 @@ def main():
                      "prompt_tps":[],"generation_tps":[],"continuations":0,"rounds":[],
                      "generation_calls":0,"generated_tokens":0,"generation_eligible_cases":0,"generation_invoked_cases":0,
                      "plan_covered":0,"plan_total":0,"answer_covered":0,
-                     "relation_covered":0,"relation_total":0} for mode in modes}
+                     "relation_covered":0,"relation_total":0,"contaminated_cases":0,
+                     "contaminated_rounds":0,"rejected_deltas":0} for mode in modes}
         retrieval_hits=0
         with tempfile.TemporaryDirectory() as td:
             store=Store(Path(td)/"rag.sqlite3")
@@ -124,6 +125,14 @@ def main():
                     mode_stats["statuses"][status]=mode_stats["statuses"].get(status,0)+1
                     mode_stats["generation_calls"] += generation_attempts
                     mode_stats["generated_tokens"] += sum(m["generated_tokens"] for m in call_metrics)
+                    contamination_rounds = [rd for rd in result.get("generation_rounds", [])
+                                             if rd.get("state") == "contaminated"]
+                    rejected_rounds = [rd for rd in result.get("generation_rounds", [])
+                                        if rd.get("state") == "rejected_delta"]
+                    mode_stats["contaminated_rounds"] += len(contamination_rounds)
+                    mode_stats["rejected_deltas"] += len(rejected_rounds)
+                    mode_stats["contaminated_cases"] += int(bool(contamination_rounds))
+                    output_contamination = _generation_contamination_reason(answer, case["question"])
                     if mode != "evidence_assembly" and result["retrieval"].accepted:
                         mode_stats["generation_eligible_cases"] += 1
                         mode_stats["generation_invoked_cases"] += int(generation_attempts > 0)
@@ -156,6 +165,8 @@ def main():
                         "retrieval_diagnostics":retrieval_diag,
                         "accepted_sources":[h["source"] for h in result["retrieval"].accepted],
                         "answer":answer,"answer_status":status,"answer_reason":result["reason"],
+                        "generation_contamination":[rd.get("contamination_reason") for rd in contamination_rounds],
+                        "output_contamination":output_contamination,
                         "expected_fact":case["answer"],
                         "fact_terms_found":sum(term.lower() in answer.lower() for term in case["terms"]),
                         "fact_terms_total":len(case["terms"]),"grounded_exact_terms":ok,
@@ -188,6 +199,10 @@ def main():
                 "answer_relation_coverage":round(st["relation_covered"]/st["relation_total"],4) if st["relation_total"] else None,
                 "answer_relation_count":st["relation_total"],
                 "answer_status_counts":st["statuses"],
+                "contaminated_cases":st["contaminated_cases"],
+                "contaminated_rounds":st["contaminated_rounds"],
+                "rejected_deltas":st["rejected_deltas"],
+                "prompt_contamination_free":st["contaminated_cases"] == 0,
                 "generation_calls":st["generation_calls"],
                 "generated_tokens":st["generated_tokens"],
                 "generation_eligible_cases":st["generation_eligible_cases"],

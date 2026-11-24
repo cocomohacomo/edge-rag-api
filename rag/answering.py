@@ -61,12 +61,49 @@ CONTINUE_MARKER = "<CONTINUE>"
 
 
 def _strip_control_markers(text: str) -> tuple[str, str | None]:
+    """Compatibility parser for one terminal protocol marker."""
     legacy_continue = "<CONTINUATION>"
     state = ("continue" if CONTINUE_MARKER in text or legacy_continue in text
              else ("end" if END_MARKER in text else None))
     cleaned = (text.replace(END_MARKER, "").replace(CONTINUE_MARKER, "")
                .replace(legacy_continue, "").strip())
     return cleaned, state
+
+
+_PROMPT_TAG_RE = re.compile(r"</?\s*[A-Z][A-Z0-9_ -]*\s*>", re.I)
+_PROMPT_HEADER_RE = re.compile(
+    r"^(?:Q|A|質問|根拠|根拠資料|回答計画|要求属性|不足項目|追加文|出力規則|"
+    r"既存回答|質問本文|参照資料|回答本文|現在までに確定した回答|未充足の項目|"
+    r"追加回答本文|日本語で回答|あなたは既存回答を補完)\s*[:：]?$",
+    re.I,
+)
+_ALLOWED_TERMINAL_MARKER_RE = re.compile(r"(?:<END_ANSWER>|<CONTINUE>|<CONTINUATION>)\s*$")
+
+
+def _generation_contamination_reason(candidate: str, question: str,
+                                     accumulated: str = "") -> str | None:
+    """Reject prompt/control echoes as a whole; never salvage contaminated text."""
+    value = (candidate or "").strip()
+    if not value:
+        return None
+    tags = list(_PROMPT_TAG_RE.finditer(value))
+    if tags:
+        terminal = _ALLOWED_TERMINAL_MARKER_RE.search(value)
+        if len(tags) != 1 or terminal is None or tags[0].start() != terminal.start():
+            return "control_tag"
+    if re.search(r"^\s*\[根拠\d+\]", value, re.M):
+        return "echoed_evidence"
+    if any(_PROMPT_HEADER_RE.match(line.strip()) or
+           re.match(r"^(?:Q|A|質問|根拠資料?|回答計画|要求属性|不足項目|追加文|出力規則)\s*[:：]", line.strip(), re.I)
+           for line in value.splitlines()):
+        return "prompt_header"
+    if question and question.strip() and question.strip() in value:
+        return "echoed_question"
+    if accumulated and accumulated.strip() and accumulated.strip() in value:
+        return "repeated_existing_answer"
+    if re.search(r"(?:あなたは|出力規則|次の情報だけを使って|根拠だけを使い)", value):
+        return "echoed_instruction"
+    return None
 
 
 def _required_slots(question: str) -> dict[str, re.Pattern]:
@@ -352,25 +389,8 @@ def _append_without_overlap(previous: str, addition: str) -> str:
 
 
 def _clean_generation_delta(candidate: str, question: str) -> str:
-    """Remove echoed prompt/control lines before answer text is accumulated."""
-    text, _ = _strip_control_markers(candidate or "")
-    cleaned = []
-    for line in text.splitlines():
-        value = line.strip()
-        if not value or value == "[CONTINUATION]" or re.match(r"^\[根拠\d+\]", value):
-            continue
-        if re.match(r"^(?:Q|質問|根拠資料?|回答計画|要求属性)[:：]", value, re.I):
-            continue
-        value = re.sub(r"^(?:A|回答)[:：]\s*", "", value, flags=re.I)
-        if question and question in value:
-            value = value.replace(question, "").strip()
-        if value:
-            cleaned.append(value)
-    result = "\n".join(cleaned).strip()
-    # A model may echo the exact question without a Q: prefix.
-    if question:
-        result = result.replace(question, "").strip()
-    return result
+    """Normalize whitespace only after the contamination gate has passed."""
+    return "\n".join(line.rstrip() for line in (candidate or "").strip().splitlines()).strip()
 
 
 def _continuation_prompt(question: str, hits: Iterable[dict], accumulated: str,
@@ -384,16 +404,15 @@ def _continuation_prompt(question: str, hits: Iterable[dict], accumulated: str,
         if passage:
             evidence.append(f"[根拠{index}] {source}: {passage[:700]}")
     return (
-        "あなたは既存回答を補完する役割です。次の情報だけを使ってください。\n"
-        f"質問: {question}\n"
-        "根拠資料:\n" + "\n".join(evidence) + "\n"
-        f"既存回答（変更せず保持）:\n<EXISTING_ANSWER>\n{accumulated}\n</EXISTING_ANSWER>\n"
-        f"不足項目: {missing_text}\n"
-        "出力規則: 不足項目に対応する追加文だけを出力する。既存回答を再掲しない。"
-        "質問、根拠、見出し、Q:、A:を出力しない。"
-        "不足項目がない場合は既存回答を繰り返さず、完結を示す終了マーカーだけを出力する。"
-        f"追加文の末尾には {END_MARKER}、追加がさらに必要な場合のみ {CONTINUE_MARKER} を付ける。\n"
-        "追加文:"
+        "日本語で、根拠資料に明記された事実だけを使って回答を補完してください。\n"
+        f"質問本文\n{question}\n"
+        "根拠資料\n" + "\n".join(evidence) + "\n"
+        f"現在までに確定した回答\n{accumulated}\n"
+        f"未充足の項目\n{missing_text}\n"
+        "確定済み回答を繰り返さず、未充足項目について根拠にある情報だけを追加してください。"
+        "質問文、見出し、根拠資料の引用行、制御記号は出力しないでください。"
+        "追加できる根拠がない場合は、何も追加せず終了してください。\n"
+        "追加回答本文\n"
     )
 
 
@@ -464,16 +483,20 @@ def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 
         "要求属性は漏れなく満たすこと。複数項目は短い箇条書きまたは「、」で列挙する。"
         "根拠に明記された数値・固有名詞・URL・パスは文字列を改変せず正確に転記する。"
         "根拠にない推測、一般論、補足説明は禁止。質問文や見出しを繰り返さない。"
-        "回答が完結したら末尾に <END_ANSWER>、続きが必要なら <CONTINUE> を付ける。"
-        "根拠がなければ「文書に記載がありません」と答える。\n"
-        f"要求属性:{requirement_text}\n回答計画:{plan_text}\nQ:{question}\n根拠:{evidence}\nA:"
+        "回答本文だけを出力し、質問文・見出し・根拠資料の再掲・制御記号は出力しない。"
+        "根拠がなければ「文書に記載がありません」と答える。"
+        "複数の要求属性がある場合は、各属性の値と関係を短く明示する。\n"
+        f"要求属性:{requirement_text}\n回答計画:{plan_text}\n"
+        f"質問本文\n{question}\n参照資料\n{evidence}\n回答本文\n"
     )
 
 
 def validate_answer(answer: str, question: str, hits: Iterable[dict], generation: dict | None = None) -> tuple[bool, str]:
     """Conservative deterministic guard against empty, off-topic and unsupported numeric output."""
-    cleaned = re.sub(r"^回答[:：]?\s*", "", (answer or "").strip())
-    cleaned = re.sub(r"\n?\[\d+\]\s*$", "", cleaned).strip()
+    cleaned = (answer or "").strip()
+    contamination = _generation_contamination_reason(cleaned, question)
+    if contamination:
+        return False, "prompt_contamination:" + contamination
     if not cleaned:
         return False, "empty"
     if generation:
@@ -637,9 +660,21 @@ def answer_with_pipeline(
             state = "failed"
             break
 
+        contamination = _generation_contamination_reason(candidate, question, accumulated)
+        truncated = _is_truncated(metadata)
+        if contamination:
+            rounds.append({
+                "round": round_index + 1,
+                "tokens": int(metadata.get("tokens_predicted") or metadata.get("generated_tokens") or 0),
+                "budget": int(metadata.get("n_predict") or metadata.get("budget") or 0),
+                "truncated": truncated, "marker": None,
+                "state": "contaminated", "contamination_reason": contamination,
+            })
+            last_reason = "prompt_contamination:" + contamination
+            state = "contaminated"
+            break
         candidate, marker = _strip_control_markers(candidate)
         candidate = _clean_generation_delta(candidate, question)
-        truncated = _is_truncated(metadata)
         rounds.append({
             "round": round_index + 1,
             "tokens": int(metadata.get("tokens_predicted") or metadata.get("generated_tokens") or 0),
@@ -653,8 +688,16 @@ def answer_with_pipeline(
         })
 
         previous = accumulated
+        proposed = _append_without_overlap(accumulated, candidate) if candidate else accumulated
         if candidate:
-            accumulated = _append_without_overlap(accumulated, candidate)
+            delta_valid, delta_reason = validate_answer(proposed, question, selected)
+            if not delta_valid:
+                rounds[-1]["state"] = "rejected_delta"
+                rounds[-1]["validation_reason"] = delta_reason
+                last_reason = delta_reason
+                state = "rejected"
+                break
+            accumulated = proposed
         valid, last_reason = validate_answer(accumulated, question, selected)
         missing = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
         text_complete = marker == "end" or bool(re.search(r"[。！？!?）」』】]$", accumulated.strip()))
@@ -726,16 +769,21 @@ def answer_with_pipeline(
         rounds[-1]["state"] = "continue"
         state = "continuing"
 
-    if retry and not accumulated and state != "failed":
+    if retry and not accumulated and state not in {"failed", "contaminated", "rejected"}:
         try:
             raw = generator(base_prompt + "\n根拠中の回答可能な事実だけを簡潔に回答してください。")
             candidate, _ = _generation_payload(raw)
-            candidate, _ = _strip_control_markers(candidate)
-            accumulated = candidate
+            contamination = _generation_contamination_reason(candidate, question)
+            if not contamination:
+                candidate, _ = _strip_control_markers(candidate)
+                candidate = _clean_generation_delta(candidate, question)
+                valid_retry, _ = validate_answer(candidate, question, selected)
+                if valid_retry:
+                    accumulated = candidate
         except Exception:
             pass
     valid, validation_reason = validate_answer(accumulated, question, selected)
-    if state != "failed":
+    if state not in {"failed", "contaminated"}:
         last_reason = validation_reason
     missing = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
     if valid and not missing and re.search(r"[。！？!?）」』】]$", accumulated.strip()):
@@ -748,7 +796,11 @@ def answer_with_pipeline(
     # by silently replacing it with evidence assembly.
     if force_generation:
         draft_valid, draft_reason = validate_answer(accumulated, question, selected)
-        if state == "failed":
+        if state == "contaminated":
+            forced_status = "generation_contaminated"
+            forced_reason = last_reason
+            visible_answer = ABSTAIN
+        elif state == "failed":
             forced_status = "generation_error"
             forced_reason = last_reason
             visible_answer = accumulated.strip() if draft_valid else ABSTAIN

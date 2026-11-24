@@ -474,21 +474,28 @@ class CoreTests(unittest.TestCase):
             "担当者は佐藤です。",
             ["deadline"],
         )
-        self.assertIn("<EXISTING_ANSWER>\n担当者は佐藤です。\n</EXISTING_ANSWER>", prompt)
-        self.assertIn("不足項目: deadline", prompt)
-        self.assertNotIn("A:担当者は佐藤です。", prompt)
-        self.assertTrue(prompt.endswith("追加文:"))
+        self.assertIn("現在までに確定した回答\n担当者は佐藤です。", prompt)
+        self.assertIn("未充足の項目\ndeadline", prompt)
+        self.assertNotIn("<EXISTING_ANSWER>", prompt)
+        self.assertNotIn("<CONTINUE>", prompt)
+        self.assertTrue(prompt.endswith("追加回答本文\n"))
 
-    def test_generation_delta_removes_echoed_question_and_control_headers(self):
-        from rag.answering import _clean_generation_delta
-        delta = _clean_generation_delta(
-            "Q:担当者と期限は？\nA:提出期限は12月15日です。<END_ANSWER>",
-            "担当者と期限は？",
+    def test_generation_contamination_is_rejected_not_salvaged(self):
+        from rag.answering import _generation_contamination_reason
+        self.assertEqual(
+            _generation_contamination_reason(
+                "Q:担当者と期限は？\nA:提出期限は12月15日です。<END_ANSWER>",
+                "担当者と期限は？",
+            ),
+            "prompt_header",
         )
-        self.assertEqual(delta, "提出期限は12月15日です。")
-        self.assertNotIn("Q:", delta)
-        self.assertNotIn("A:", delta)
-        self.assertNotIn("<END_ANSWER>", delta)
+        self.assertEqual(
+            _generation_contamination_reason(
+                "提出期限は12月15日です。<INSTRUCTION>再掲</INSTRUCTION>",
+                "担当者と期限は？",
+            ),
+            "control_tag",
+        )
 
     def test_continuation_merges_only_clean_delta(self):
         hits = [{"score": .9, "source": "minutes.md",
@@ -512,8 +519,10 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn("Q:", result["answer"])
         self.assertNotIn("A:", result["answer"])
         self.assertNotIn("<END_ANSWER>", result["answer"])
-        self.assertIn("<EXISTING_ANSWER>", calls[1])
-        self.assertNotIn("Q:会議の担当者と提出期限は？\n根拠:", calls[1])
+        self.assertIn("現在までに確定した回答", calls[1])
+        self.assertNotIn("<EXISTING_ANSWER>", calls[1])
+        self.assertNotIn("<CONTINUE>", calls[1])
+        self.assertNotIn("<END_ANSWER>", calls[1])
 
 
     def test_legacy_continuation_marker_and_echoed_evidence_header_are_removed(self):
@@ -521,11 +530,35 @@ class CoreTests(unittest.TestCase):
         cleaned, state = _strip_control_markers("不足情報です。<CONTINUATION>")
         self.assertEqual(cleaned, "不足情報です。")
         self.assertEqual(state, "continue")
-        delta = _clean_generation_delta(
-            "根拠資料:\n[根拠1] minutes.md: 担当者は佐藤です。\nA:期限は12月15日です。",
-            "担当者と期限は？",
+        echoed = "根拠資料:\n[根拠1] minutes.md: 担当者は佐藤です。\nA:期限は12月15日です。"
+        self.assertEqual(_generation_contamination_reason(echoed, "担当者と期限は？"),
+                         "echoed_evidence")
+
+
+    def test_contaminated_generation_fails_closed_and_never_reaches_continuation(self):
+        hits = [{"score": .9, "source": "minutes.md",
+                 "text": "担当者は佐藤です。提出期限は12月15日です。"}]
+        prompts = []
+        def generator(prompt):
+            prompts.append(prompt)
+            return {"content": "担当者は佐藤です。<INSTRUCTION>再掲</INSTRUCTION>",
+                    "stop": True, "tokens_predicted": 12, "n_predict": 48}
+        result = answer_with_pipeline(
+            "会議の担当者と提出期限は？", hits, generator,
+            continuation=True, max_continuations=2, force_generation=True,
         )
-        self.assertEqual(delta, "期限は12月15日です。")
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(result["status"], "generation_contaminated")
+        self.assertEqual(result["answer"], ABSTAIN)
+        self.assertEqual(result["generation_rounds"][0]["state"], "contaminated")
+        self.assertEqual(result["generation_rounds"][0]["contamination_reason"], "control_tag")
+
+    def test_prompt_has_no_output_control_markers(self):
+        prompt = build_evidence_prompt("担当者は？", [
+            {"source": "minutes.md", "text": "担当者は佐藤です。"}
+        ])
+        self.assertNotIn("<END_ANSWER>", prompt)
+        self.assertNotIn("<CONTINUE>", prompt)
 
 
 if __name__ == '__main__':
