@@ -36,8 +36,16 @@ def build_attribute_ledger(plan: dict, hits: Iterable[dict]) -> dict:
                         bindings.append(binding)
                     if value not in distinct:
                         distinct.append(value)
-        # Multiple candidates from one passage are not contradictory evidence.\n        value_evidence = {}\n        for binding in bindings:\n            value_evidence.setdefault(binding["value"], set()).add(binding["evidence_id"])\n        independently_supported = [value for value, ids in value_evidence.items() if ids]\n        conflict = len(independently_supported) > 1 and len({\n            evidence_id for ids in value_evidence.values() for evidence_id in ids\n        }) > 1\n        status = "insufficient" if not bindings else ("conflict" if conflict else "supported")
-        attributes.append({"attribute": name, "status": status,
+        # Multiple candidates from one passage are not contradictory evidence.
+        value_evidence = {}
+        for binding in bindings:
+            value_evidence.setdefault(binding["value"], set()).add(binding["evidence_id"])
+        independently_supported = [value for value, ids in value_evidence.items() if ids]
+        conflict = len(independently_supported) > 1 and len({
+            evidence_id for ids in value_evidence.values() for evidence_id in ids
+        }) > 1
+        attribute_status = "insufficient" if not bindings else ("conflict" if conflict else "supported")
+        attributes.append({"attribute": name, "status": attribute_status,
                            "values": distinct, "bindings": bindings})
     return {"question": plan.get("question", ""), "attributes": attributes}
 
