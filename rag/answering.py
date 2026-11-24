@@ -115,11 +115,18 @@ def _relation_evidence(spec: dict, hits: Iterable[dict]) -> list[dict]:
     pattern = re.compile(spec["pattern"])
     for hit in hits:
         text = str(hit.get("text", ""))
+        matched = []
         for sentence in re.split(r"(?<=[。！？!?])\s*|\n+", text):
             sentence = sentence.strip()
             if sentence and pattern.search(sentence):
-                found.append({"source": str(hit.get("source", "unknown")),
-                              "text": sentence, "evidence": sentence})
+                matched.append(sentence)
+        # Some relations span adjacent sentences; retain the source passage as
+        # one provenance unit rather than incorrectly dropping the relation.
+        if not matched and pattern.search(text):
+            matched.append(text.strip())
+        for sentence in matched:
+            found.append({"source": str(hit.get("source", "unknown")),
+                          "text": sentence, "evidence": sentence})
     return found
 
 
@@ -389,6 +396,10 @@ def build_evidence_prompt(question: str, hits: Iterable[dict], max_chars: int = 
         for item in plan["evidence_mapping"].get(slot, []):
             values.extend(item["values"])
         plan_lines.append(f"{slot}: {', '.join(dict.fromkeys(values)) if values else '根拠なし'}")
+    for spec in plan.get("relation_requirements", []):
+        entries = plan.get("relation_mapping", {}).get(spec["id"], [])
+        evidence_lines = " / ".join(item["text"] for item in entries[:2]) or "根拠なし"
+        plan_lines.append(f"関係性[{spec['id']}]: {evidence_lines}")
     plan_text = "\n".join(plan_lines)
     return (
         "日本語で回答。根拠だけを使い、最初に質問を要求属性へ分解し、根拠文から各属性の値を対応付けて回答する。"
