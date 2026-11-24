@@ -34,6 +34,13 @@ def get_json(url, payload=None, timeout=5):
     with urllib.request.urlopen(req, timeout=timeout) as res:
         return json.loads(res.read().decode())
 
+def normalize_generation_rounds(value):
+    """Normalize legacy scalar and current list representations for metrics only."""
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
 def proc_memory_mb(pid):
     try:
         status = Path(f"/proc/{pid}/status").read_text()
@@ -125,8 +132,7 @@ def main():
                     mode_stats["statuses"][status]=mode_stats["statuses"].get(status,0)+1
                     mode_stats["generation_calls"] += generation_attempts
                     mode_stats["generated_tokens"] += sum(m["generated_tokens"] for m in call_metrics)
-                    raw_rounds = result.get("generation_rounds", [])
-                    generation_rounds = raw_rounds if isinstance(raw_rounds, list) else []
+                    generation_rounds = normalize_generation_rounds(result.get("generation_rounds", []))
                     contamination_rounds = [rd for rd in generation_rounds
                                            if isinstance(rd, dict) and rd.get("state") == "contaminated"]
                     rejected_rounds = [rd for rd in generation_rounds

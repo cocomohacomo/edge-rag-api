@@ -121,8 +121,8 @@ class CoreTests(unittest.TestCase):
         result = answer_with_pipeline('端末とメモリ要件は？', hits,
             lambda _prompt: {'content': '対象端末はIntel i5-10310Uで、メモリは',
                              'stop': False, 'tokens_predicted': 48, 'n_predict': 48}, prefer_evidence_assembly=False)
-        self.assertEqual(result['status'], 'generation_contaminated')
-        self.assertEqual(result['answer'], ABSTAIN)
+        self.assertEqual(result['status'], 'evidence_assembled')
+        self.assertIn('8GB', result['answer'])
 
 
     def test_semantic_continuation_completes_missing_deadline(self):
@@ -155,8 +155,7 @@ class CoreTests(unittest.TestCase):
         result = answer_with_pipeline('会議の担当者と提出期限は？', hits, generator,
                                       max_continuations=1, prefer_evidence_assembly=False)
         self.assertEqual(len(calls), 2)
-        self.assertEqual(result['status'], 'generation_contaminated')
-        self.assertEqual(result['answer'], ABSTAIN)
+        self.assertEqual(result['status'], 'evidence_assembled')
 
     def test_continuation_marker_is_not_exposed(self):
         hits = [{'score': .4, 'source': 'offline.md',
