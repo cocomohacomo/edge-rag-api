@@ -23,7 +23,7 @@ def build_evidence_ledger(question: str, hits: Iterable[dict], plan: dict | None
         seen.add(key)
         # Preserve exact source text; extraction is deliberately lexical and conservative.
         facts = []
-        for pattern in (r"https?://[^\s<>]+", r"\d+(?:[.,]\d+)?\s*(?:GB|MB|GiB|MiB|%|日|月|年|時|分)",
+        for pattern in (r"https?://[^\s<>、。]+", r"\d+(?:[.,]\d+)?\s*(?:GB|MB|GiB|MiB|%|日|月|年|時|分)",
                        r"i[3579]-?\d{3,5}[A-Za-z]?", r"\d{1,4}年\d{1,2}月\d{1,2}日", r"\d{1,2}月\d{1,2}日"):
             facts.extend(re.findall(pattern, text, re.I))
         entries.append({"evidence_id": f"E{len(entries)+1}", "source": source,

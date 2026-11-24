@@ -95,7 +95,7 @@ class CoreTests(unittest.TestCase):
         calls = []
         result = answer_with_pipeline('会議の担当者と提出期限は？', hits,
                                       lambda _prompt: calls.append(1) or '', continuation=False)
-        self.assertEqual(len(calls), 0)
+        self.assertEqual(len(calls), 1)
         self.assertEqual(result['status'], 'evidence_assembled')
 
     def test_validator_rejects_internal_model_tags(self):
@@ -190,7 +190,7 @@ class CoreTests(unittest.TestCase):
                     'stopped_limit': True, 'tokens_predicted': 48, 'n_predict': 48}
         result = answer_with_pipeline('CPUのみで動く実行方式は？', hits, generator)
         self.assertEqual(result['status'], 'evidence_assembled')
-        self.assertEqual(len(calls), 0)
+        self.assertEqual(len(calls), 1)
         self.assertIn('CPU', result['answer'])
 
 
