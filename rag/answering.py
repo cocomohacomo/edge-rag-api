@@ -115,7 +115,7 @@ def _relation_evidence(spec: dict, hits: Iterable[dict]) -> list[dict]:
     pattern = re.compile(spec["pattern"])
     for hit in hits:
         text = str(hit.get("text", ""))
-        for sentence in re.split(r"(?<=[。！？!?])\\s*|\\n+", text):
+        for sentence in re.split(r"(?<=[。！？!?])\s*|\n+", text):
             sentence = sentence.strip()
             if sentence and pattern.search(sentence):
                 found.append({"source": str(hit.get("source", "unknown")),
@@ -231,6 +231,12 @@ def assemble_evidence_answer(plan: dict) -> str | None:
         provenance = "、".join(sources[:2])
         suffix = f"（出典: {provenance}）" if provenance else ""
         lines.append(f"{labels.get(slot, slot)}: {rendered}{suffix}")
+    for spec in plan.get("relation_requirements", []):
+        entries = plan.get("relation_mapping", {}).get(spec["id"], [])
+        if not entries:
+            return None
+        unique = list(dict.fromkeys(item["text"] for item in entries))
+        lines.append(f"{spec['label']}: " + " / ".join(unique[:2]))
     return "\n".join(lines) + "。"
 
 
@@ -535,7 +541,7 @@ def answer_with_pipeline(
             prompt = base_prompt
             state = "generating_initial"
         else:
-            missing_before = _missing_slots(question, accumulated, selected)
+            missing_before = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
             prompt = _continuation_prompt(base_prompt, accumulated, missing_before)
             state = "generating_continuation"
         try:
@@ -652,7 +658,8 @@ def answer_with_pipeline(
                 "generation_rounds": rounds, "missing_slots": [],
                 "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
     assembled = assemble_evidence_answer(plan)
-    assembled_valid = bool(assembled) and validate_answer(assembled, question, selected)[0]
+    assembled_valid = (bool(assembled) and validate_answer(assembled, question, selected)[0]
+                       and not _missing_relations(question, assembled, selected))
     if assembled_valid:
         return {"answer": assembled, "status": "evidence_assembled",
                 "reason": "generation_incomplete_but_requirements_have_direct_evidence",
