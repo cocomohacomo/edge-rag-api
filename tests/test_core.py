@@ -205,17 +205,29 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result['status'], 'extractive_fallback')
         self.assertEqual(len(calls), 1)
 
-    def test_unfinished_sentence_without_evidence_backed_slot_does_not_continue(self):
+    def test_truncated_grounded_sentence_continues_without_control_marker(self):
         hits = [{'score': .4, 'source': 'offline.md',
                  'text': '初回導入後はオフラインで動作する。'}]
         calls = []
         def generator(_prompt):
             calls.append(1)
-            return {'content': '初回導入後はオフラインで',
-                    'stopped_limit': True, 'tokens_predicted': 24, 'n_predict': 24}
+            if len(calls) == 1:
+                return {'content': '初回導入後はオフラインで',
+                        'stop': False, 'tokens_predicted': 24, 'n_predict': 24}
+            return {'content': '動作します。<END_ANSWER>',
+                    'stop': True, 'tokens_predicted': 8, 'n_predict': 24}
         result = answer_with_pipeline('初回導入後の動作は？', hits, generator)
-        self.assertEqual(result['status'], 'extractive_fallback')
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(result['status'], 'generated')
+        self.assertEqual(len(calls), 2)
+        self.assertIn('オフラインで動作します', result['answer'])
+        self.assertTrue(result['generation_rounds'][0]['truncated'])
+
+    def test_evidence_prompt_uses_real_newlines(self):
+        prompt = build_evidence_prompt('担当者は？', [
+            {'source': 'minutes.md', 'text': '担当者は佐藤です。'}
+        ])
+        self.assertIn('\n', prompt)
+        self.assertNotIn('\\n', prompt)
 
 
     def test_answer_plan_maps_required_attributes_to_source_evidence(self):
