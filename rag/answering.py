@@ -116,8 +116,13 @@ def _generation_contamination_reason(candidate: str, question: str,
         return "echoed_question"
     if accumulated and accumulated.strip() and accumulated.strip() in value:
         return "repeated_existing_answer"
-    if re.search(r"(?:あなたは|出力規則|次の情報だけを使って|根拠だけを使い)", value):
+    if re.search(r"(?:あなたは|出力規則|次の情報だけを使って|根拠だけを使い|確定済み回答|未充足の項目|追加回答本文|参照資料|質問本文)", value):
         return "echoed_instruction"
+    # Reject role-prefixed or structured prompt fragments, not just angle-bracket tags.
+    if re.search(r"(?im)^\\s*(?:system|assistant|user|developer)\\s*[:：]", value):
+        return "role_echo"
+    if re.search(r"(?im)^\\s*(?:根拠資料|回答計画|要求属性|不足項目|追加文|出力規則)\\s*[:：]", value):
+        return "prompt_structure"
     return None
 
 
@@ -785,6 +790,14 @@ def answer_with_pipeline(
             break
         rounds[-1]["state"] = "continue"
         state = "continuing"
+
+    # Contamination is a hard failure: quarantine the entire generation state.
+    # No partial prefix from earlier rounds is exposed or passed to downstream logic.
+    if state == "contaminated":
+        return {"answer": ABSTAIN, "status": "generation_contaminated",
+                "reason": last_reason, "retrieval": decision,
+                "generation_rounds": rounds, "missing_slots": [],
+                "answer_plan": plan, "progress": build_progress_summary(plan, validated=False)}
 
     if retry and not accumulated and state not in {"failed", "contaminated", "rejected"}:
         try:

@@ -125,10 +125,12 @@ def main():
                     mode_stats["statuses"][status]=mode_stats["statuses"].get(status,0)+1
                     mode_stats["generation_calls"] += generation_attempts
                     mode_stats["generated_tokens"] += sum(m["generated_tokens"] for m in call_metrics)
-                    contamination_rounds = [rd for rd in result.get("generation_rounds", [])
-                                             if rd.get("state") == "contaminated"]
-                    rejected_rounds = [rd for rd in result.get("generation_rounds", [])
-                                        if rd.get("state") == "rejected_delta"]
+                    raw_rounds = result.get("generation_rounds", [])
+                    generation_rounds = raw_rounds if isinstance(raw_rounds, list) else []
+                    contamination_rounds = [rd for rd in generation_rounds
+                                           if isinstance(rd, dict) and rd.get("state") == "contaminated"]
+                    rejected_rounds = [rd for rd in generation_rounds
+                                       if isinstance(rd, dict) and rd.get("state") == "rejected_delta"]
                     mode_stats["contaminated_rounds"] += len(contamination_rounds)
                     mode_stats["rejected_deltas"] += len(rejected_rounds)
                     mode_stats["contaminated_cases"] += int(bool(contamination_rounds))

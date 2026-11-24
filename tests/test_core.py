@@ -563,3 +563,25 @@ class CoreTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class TestGenerationContaminationQuarantine:
+    def test_role_prefix_is_contamination(self):
+        from rag.answering import _generation_contamination_reason
+        assert _generation_contamination_reason("assistant: 根拠に基づく回答", "質問") == "role_echo"
+
+    def test_prompt_structure_echo_is_contamination(self):
+        from rag.answering import _generation_contamination_reason
+        assert _generation_contamination_reason("参照資料\\n資料本文", "質問") == "echoed_instruction"
+
+    def test_contaminated_generation_is_quarantined_without_partial_answer(self):
+        from rag.answering import answer_with_pipeline, ABSTAIN
+        hits = [{"source": "spec.md", "text": "メモリ要件は8GB RAM。" , "score": 1.0}]
+        responses = iter([{"content": "メモリ要件は8GB RAM。", "stop_type": "eos"},
+                         {"content": "質問本文\\n質問\\n根拠資料\\n資料本文", "stop_type": "eos"}])
+        result = answer_with_pipeline("メモリ要件は何ですか？", hits,
+            generator=lambda prompt: next(responses), retry=False,
+            continuation=True, max_continuations=1,
+            prefer_evidence_assembly=False, force_generation=True)
+        assert result["status"] == "generation_contaminated"
+        assert result["answer"] == ABSTAIN
+        assert result["generation_rounds"][-1]["state"] == "contaminated"
