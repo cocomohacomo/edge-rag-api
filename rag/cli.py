@@ -1,9 +1,14 @@
 from __future__ import annotations
 import argparse, sys, json
 from pathlib import Path
-from core import Store, extract_file
-from answering import answer_with_pipeline, local_llama_generator
-from retrieval_v2 import search_with_diagnostics
+try:
+    from .core import Store, extract_file
+    from .answering import answer_with_pipeline, local_llama_generator
+    from .retrieval_v2 import search_with_diagnostics
+except ImportError:  # direct execution via python rag/cli.py
+    from core import Store, extract_file
+    from answering import answer_with_pipeline, local_llama_generator
+    from retrieval_v2 import search_with_diagnostics
 
 
 def ingest(store: Store, paths: list[Path]) -> int:
