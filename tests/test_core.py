@@ -272,7 +272,6 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result["status"], "generation_unavailable")
         self.assertEqual(result["answer"], ABSTAIN)
         self.assertEqual(result["generation_rounds"], 0)
-        self.assertEqual(result["generation_rounds"], 0)
 
     def test_answer_plan_tracks_missing_evidence_without_inventing_values(self):
         plan = build_answer_plan("担当者と期限は？", [
