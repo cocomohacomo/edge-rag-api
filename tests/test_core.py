@@ -466,5 +466,55 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result['generation_rounds'][-1]['state'], 'completed')
 
 
+    def test_continuation_prompt_is_fresh_and_keeps_answer_as_separate_state(self):
+        from rag.answering import _continuation_prompt
+        prompt = _continuation_prompt(
+            "担当者と期限は？",
+            [{"source": "minutes.md", "text": "担当者は佐藤です。期限は12月15日です。"}],
+            "担当者は佐藤です。",
+            ["deadline"],
+        )
+        self.assertIn("<EXISTING_ANSWER>\\n担当者は佐藤です。\\n</EXISTING_ANSWER>", prompt)
+        self.assertIn("不足項目: deadline", prompt)
+        self.assertNotIn("A:担当者は佐藤です。", prompt)
+        self.assertTrue(prompt.endswith("追加文:"))
+
+    def test_generation_delta_removes_echoed_question_and_control_headers(self):
+        from rag.answering import _clean_generation_delta
+        delta = _clean_generation_delta(
+            "Q:担当者と期限は？\\nA:提出期限は12月15日です。<END_ANSWER>",
+            "担当者と期限は？",
+        )
+        self.assertEqual(delta, "提出期限は12月15日です。")
+        self.assertNotIn("Q:", delta)
+        self.assertNotIn("A:", delta)
+        self.assertNotIn("<END_ANSWER>", delta)
+
+    def test_continuation_merges_only_clean_delta(self):
+        hits = [{"score": .9, "source": "minutes.md",
+                 "text": "会議の担当者は佐藤です。提出期限は12月15日です。"}]
+        calls = []
+        def generator(prompt):
+            calls.append(prompt)
+            if len(calls) == 1:
+                return {"content": "担当者は佐藤です。<CONTINUE>",
+                        "stop": True, "tokens_predicted": 12, "n_predict": 48}
+            return {"content": "Q:会議の担当者と提出期限は？\\nA:提出期限は12月15日です。<END_ANSWER>",
+                    "stop": True, "tokens_predicted": 12, "n_predict": 24}
+        from rag.answering import answer_with_pipeline
+        result = answer_with_pipeline(
+            "会議の担当者と提出期限は？", hits, generator,
+            continuation=True, max_continuations=1, force_generation=True,
+        )
+        self.assertEqual(result["status"], "generated")
+        self.assertIn("佐藤", result["answer"])
+        self.assertIn("12月15日", result["answer"])
+        self.assertNotIn("Q:", result["answer"])
+        self.assertNotIn("A:", result["answer"])
+        self.assertNotIn("<END_ANSWER>", result["answer"])
+        self.assertIn("<EXISTING_ANSWER>", calls[1])
+        self.assertNotIn("Q:会議の担当者と提出期限は？\\n根拠:", calls[1])
+
+
 if __name__ == '__main__':
     unittest.main()
