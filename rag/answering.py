@@ -247,8 +247,7 @@ def assemble_evidence_answer(plan: dict) -> str | None:
                 sources.append(source)
         if not values:
             return None
-        rendered = "、".join(values[:3])
-        provenance = "、".join(sources[:2])
+        rendered = "、".join(values[:3])        provenance = "、".join(sources[:2])
         suffix = f"（出典: {provenance}）" if provenance else ""
         lines.append(f"{labels.get(slot, slot)}: {rendered}{suffix}")
     for spec in plan.get("relation_requirements", []):
@@ -343,12 +342,15 @@ def _append_without_overlap(previous: str, addition: str) -> str:
 
 
 def _continuation_prompt(base_prompt: str, accumulated: str, missing: list[str]) -> str:
+    missing_text = ", ".join(missing) if missing else "回答文の完結と明示的な終了"
     return (
         base_prompt + accumulated +
-        "\n\n[CONTINUATION]\n前回の回答に続けてください。既出内容を繰り返さず、"
-        "不足情報だけを根拠から補ってください。"
-        f"未充足項目: {', '.join(missing) if missing else '文章の完結'}。"
-        f"意味的に完結したら {END_MARKER}、続きが必要なら {CONTINUE_MARKER} を末尾に付けてください。\n"
+        "\n\n[CONTINUATION]\nこれは回答の続きです。既出の事実や文を繰り返さず、"
+        "根拠にある不足情報だけを追加してください。"
+        "必要項目が既に揃っている場合は、新しい事実を追加せず、現在の回答を自然な完全文として閉じてください。"
+        f"未充足項目・完結条件: {missing_text}。"
+        f"回答を完結したら必ず {END_MARKER} を末尾に付けてください。"
+        f"まだ回答を続ける必要がある場合だけ {CONTINUE_MARKER} を付けてください。\n"
     )
 
 
@@ -497,8 +499,7 @@ def extractive_fallback(question: str, hits: Iterable[dict], max_sentences: int 
             )
             score = coverage + 0.20 * attribute_hits
             if coverage > 0 or attribute_hits:
-                candidates.append((score, len(sentence), sentence, hit.get("source", "unknown")))
-    candidates.sort(key=lambda x: (x[0], -x[1]), reverse=True)
+                candidates.append((score, len(sentence), sentence, hit.get("source", "unknown")))    candidates.sort(key=lambda x: (x[0], -x[1]), reverse=True)
     selected = []
     seen = set()
     for _, _, sentence, source in candidates:
@@ -666,8 +667,12 @@ def answer_with_pipeline(
         # when the model explicitly requested continuation or hit its token cap.
         # A hard token-limit stop may truncate an otherwise grounded sentence
         # before the model emits its control marker. Continue only while unfinished.
+        # A grounded but unfinished answer also deserves one bounded completion
+        # attempt when the model stopped at EOS without emitting a control marker.
+        # This avoids treating punctuation/marker omission as a reason to discard
+        # otherwise useful generated content.
         should_continue = bool(continuable_missing) or (
-            not text_complete and (marker == "continue" or truncated)
+            not text_complete and (marker == "continue" or truncated or valid)
         )
         if not should_continue:
             rounds[-1]["state"] = "model_finished"
@@ -693,6 +698,29 @@ def answer_with_pipeline(
                 "reason": "semantic_completion", "retrieval": decision,
                 "generation_rounds": rounds, "missing_slots": [],
                 "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
+    # Generation-required callers must be able to distinguish an incomplete
+    # generation from a deterministic answer. Never hide a failed LLM attempt
+    # by silently replacing it with evidence assembly.
+    if force_generation:
+        draft_valid, draft_reason = validate_answer(accumulated, question, selected)
+        if state == "failed":
+            forced_status = "generation_error"
+            forced_reason = last_reason
+            visible_answer = accumulated.strip() if draft_valid else ABSTAIN
+        else:
+            forced_status = "generation_incomplete"
+            forced_reason = (
+                "requirements_incomplete" if missing else
+                ("answer_not_grounded" if not draft_valid else "completion_not_confirmed")
+            )
+            visible_answer = accumulated.strip() if draft_valid else ABSTAIN
+        return {"answer": visible_answer, "status": forced_status,
+                "reason": forced_reason, "validation_reason": draft_reason,
+                "retrieval": decision, "generation_rounds": rounds,
+                "missing_slots": missing, "answer_plan": plan,
+                "progress": build_progress_summary(plan, validated=False),
+                "numeric_diagnostics": _numeric_claim_diagnostics(accumulated, selected)}
+
     assembled = assemble_evidence_answer(plan)
     assembled_valid = (bool(assembled) and validate_answer(assembled, question, selected)[0]
                        and not _missing_relations(question, assembled, selected))
