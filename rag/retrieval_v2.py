@@ -151,8 +151,8 @@ def search_with_diagnostics(store: Any, query: str, limit: int = 5) -> tuple[lis
         for i, row in enumerate(ordered[:40])]
     diagnostics["rejected_candidates"] = [
         {"id": row["id"], "source": row["source"], "reason": "candidate_cutoff"}
-        for row in ordered if row["id"] not in selected_ids][:20]
-    ]
+        for row in ordered if row["id"] not in selected_ids
+    ][:20]
     if not selected:
         classes = []
         if not terms and not exact:
