@@ -87,8 +87,10 @@ def build_composer_prompt(base_prompt: str, ledger: dict, validation: dict) -> s
                         "evidence": item.get("bindings", [])})
     return (base_prompt + "\nATTRIBUTE_BINDINGS_JSON (verified data only):\n"
             + json.dumps(allowed, ensure_ascii=False, separators=(",", ":"))
-            + "\n文章化できるのは上記の検証済み属性だけです。未充足属性は未記載とし、"
-              "推測・補完・別の根拠からの追加は禁止。属性値は原文どおり保持してください。\n")
+            + "\n短い事実を列挙して回答してください。"
+              "形式は「属性: 値」の箇条書き。1項目1行、説明・前置き・結論・一般論は不要。"
+              "検証済み属性だけを使い、値は原文どおり転記。未充足属性を推測・補完しない。"
+              "複数属性は全て列挙し、最後に句点を付けて終了してください。\n")
 
 
 def validate_composed_answer(answer: str, ledger: dict, validation: dict) -> tuple[bool, str]:

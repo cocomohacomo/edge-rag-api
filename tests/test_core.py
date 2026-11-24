@@ -655,3 +655,28 @@ class AttributeBindingArchitectureTests(unittest.TestCase):
         self.assertEqual(result["status"], "evidence_conflict")
         self.assertEqual(result["answer"], ABSTAIN)
         self.assertEqual(calls, [])
+
+
+class ShortFactListPromptTests(unittest.TestCase):
+    def test_composer_prompt_requests_short_fact_enumeration(self):
+        from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger, build_composer_prompt
+        hits = [{"source": "spec.md", "text": "対象端末はIntel i5-10310U。メモリ要件は8GB RAM。"}]
+        plan = build_answer_plan("端末とメモリは？", hits)
+        ledger = build_attribute_ledger(plan, hits)
+        validation = validate_attribute_ledger(ledger)
+        prompt = build_composer_prompt("BASE", ledger, validation)
+        self.assertIn("短い事実を列挙", prompt)
+        self.assertIn("属性: 値", prompt)
+        self.assertIn("1項目1行", prompt)
+        self.assertIn("説明・前置き・結論・一般論は不要", prompt)
+        self.assertIn("全て列挙", prompt)
+
+    def test_fact_list_answer_passes_literal_attribute_validation(self):
+        from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger, validate_composed_answer
+        hits = [{"source": "spec.md", "text": "対象端末はIntel i5-10310U。メモリ要件は8GB RAM。"}]
+        plan = build_answer_plan("端末とメモリは？", hits)
+        ledger = build_attribute_ledger(plan, hits)
+        validation = validate_attribute_ledger(ledger)
+        answer = "端末: i5-10310U\nメモリ: 8GB RAM。"
+        ok, reason = validate_composed_answer(answer, ledger, validation)
+        self.assertTrue(ok, reason)
