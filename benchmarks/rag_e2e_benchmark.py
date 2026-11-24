@@ -72,7 +72,8 @@ def main():
         modes=("evidence_assembly","single_pass","semantic_continuation")
         stats={mode:{"requests":[],"facts":0,"statuses":{},"prompt_ms":[],"generation_ms":[],
                      "prompt_tps":[],"generation_tps":[],"continuations":0,"rounds":[],
-                     "generation_calls":0,"generated_tokens":0,"plan_covered":0,"plan_total":0,"answer_covered":0,
+                     "generation_calls":0,"generated_tokens":0,"generation_eligible_cases":0,"generation_invoked_cases":0,
+                     "plan_covered":0,"plan_total":0,"answer_covered":0,
                      "relation_covered":0,"relation_total":0} for mode in modes}
         retrieval_hits=0
         with tempfile.TemporaryDirectory() as td:
@@ -123,6 +124,9 @@ def main():
                     mode_stats["statuses"][status]=mode_stats["statuses"].get(status,0)+1
                     mode_stats["generation_calls"] += generation_attempts
                     mode_stats["generated_tokens"] += sum(m["generated_tokens"] for m in call_metrics)
+                    if mode != "evidence_assembly" and result["retrieval"].accepted:
+                        mode_stats["generation_eligible_cases"] += 1
+                        mode_stats["generation_invoked_cases"] += int(generation_attempts > 0)
                     ok=all(term.lower() in answer.lower() for term in case["terms"])
                     mode_stats["facts"] += int(ok)
                     plan=result.get("answer_plan", {})
@@ -186,7 +190,10 @@ def main():
                 "answer_status_counts":st["statuses"],
                 "generation_calls":st["generation_calls"],
                 "generated_tokens":st["generated_tokens"],
-                "generation_invocation_rate":round(sum(1 for row in rows if row["mode"]==mode and row["generation_rounds"]>0)/len(CASES),4),
+                "generation_eligible_cases":st["generation_eligible_cases"],
+                "generation_invoked_cases":st["generation_invoked_cases"],
+                "generation_invocation_rate":(round(st["generation_invoked_cases"]/st["generation_eligible_cases"],4)
+                    if st["generation_eligible_cases"] else None),
                 "continuation_rate":round(st["continuations"]/len(CASES),4),
                 "mean_generation_rounds":round(statistics.mean(st["rounds"]),2),
                 "prompt_processing_ms_mean":round(statistics.mean(st["prompt_ms"]),2) if st["prompt_ms"] else None,
