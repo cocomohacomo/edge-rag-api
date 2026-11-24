@@ -611,7 +611,9 @@ class EvidenceLedgerArchitectureTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(result["status"], "generated")
         self.assertIn("Evidence", calls[0]) if "Evidence" in calls[0] else self.assertIn("EVIDENCE_LEDGER_JSON", calls[0])
-\n\nclass AttributeBindingArchitectureTests(unittest.TestCase):
+
+
+class AttributeBindingArchitectureTests(unittest.TestCase):
     def test_attribute_binding_keeps_exact_source_offsets_and_quote(self):
         from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger
         hits = [{"source": "minutes.md", "text": "会議の担当者は佐藤です。提出期限は12月15日です。"}]
