@@ -43,7 +43,7 @@ def expand_query(query: str) -> list[str]:
     for concept, synonyms in _SYNONYMS.items():
         if concept in normalized:
             for synonym in synonyms:
-                expanded.extend(japanese_terms(synonym))
+                expanded.extend([synonym.lower(), *japanese_terms(synonym)])
     return list(dict.fromkeys(expanded))
 
 
