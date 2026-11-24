@@ -600,13 +600,13 @@ def answer_with_pipeline(
     continuation: bool = True,
     max_continuations: int = 2,
     prefer_evidence_assembly: bool = True,
-    force_generation: bool = False,
+    force_generation: bool = True,
 ) -> dict:
-    """Evidence gate -> optional deterministic assembly -> bounded LLM loop -> validated fallback.
+    """Evidence gate -> mandatory-by-default LLM loop -> validated result.
 
-    force_generation bypasses the pre-generation evidence assembler. When enabled,
-    a missing generator is reported explicitly instead of silently returning an
-    assembled answer, which makes generation-required callers and benchmarks auditable.
+    Generation is required by default. The legacy force_generation switch remains
+    for explicit compatibility callers, but normal pipeline use fails closed when
+    no local generator is configured.
     """
     decision = retrieval_gate(question, hits)
     plan = build_answer_plan(question, decision.accepted)
@@ -618,7 +618,7 @@ def answer_with_pipeline(
 
     if generator is None:
         return {"answer": ABSTAIN, "status": "generation_unavailable",
-                "reason": "llm_generation_required", "retrieval": decision,
+                "reason": ("forced_generation_requires_generator" if force_generation else "llm_generation_required"), "retrieval": decision,
                 "generation_rounds": 0, "answer_plan": plan,
                 "progress": build_progress_summary(plan, validated=False)}
 
