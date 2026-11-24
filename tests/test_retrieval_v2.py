@@ -26,7 +26,7 @@ class RetrievalV2Tests(unittest.TestCase):
 
     def test_expansion_adds_indexing_terms_without_replacing_query(self):
         expanded = expand_query("検索インデックスの構築方法")
-        self.assertTrue(set(expanded) >= set(("検索", "FTS5", "チャンク化")))
+        self.assertTrue(set(expanded) >= set(("検索", "fts5", "チャンク化")))
 
     def test_index_query_finds_index_document(self):
         hits, diag = search_with_diagnostics(self.store, "検索インデックスはどのように構築しますか", 5)
