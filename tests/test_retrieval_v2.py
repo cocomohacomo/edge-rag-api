@@ -40,6 +40,13 @@ class RetrievalV2Tests(unittest.TestCase):
         hits, _ = search_with_diagnostics(self.store, "8GBメモリ環境でモデルと検索DBを共存できますか", 5)
         sources = {h["source"] for h in hits}
         self.assertIn("memory.md", sources)
+        self.assertTrue(all(0.0 <= h["score"] <= 1.0 for h in hits))
+        self.assertTrue(all("lexical_overlap" in h and "rrf_score" in h for h in hits))
+
+    def test_original_query_bigram_channel_is_independent(self):
+        hits, diag = search_with_diagnostics(self.store, "日本語文書の全文検索", 5)
+        self.assertTrue(hits)
+        self.assertGreater(diag["channels"]["bigram"]["candidate_count"], 0)
 
     def test_diagnostics_explain_empty_query(self):
         hits, diag = search_with_diagnostics(self.store, "   ", 5)
