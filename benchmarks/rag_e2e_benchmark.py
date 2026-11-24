@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rag.core import Store
-from rag.answering import answer_with_pipeline, generation_budget, _missing_slots
+from rag.answering import answer_with_pipeline, generation_budget, _missing_slots, _missing_relations
 
 CASES = [
     {"id":"agri-01","topic":"農地転用","question":"農地の現状変更で、表土を確保する際に確認すべき基準は何ですか？","answer":"表土の確保と土壌の適正","terms":["表土","土壌","現状変更"],"source":"農地現状変更運用基準.md"},
@@ -71,7 +71,8 @@ def main():
         modes=("single","semantic_continuation")
         stats={mode:{"requests":[],"facts":0,"statuses":{},"prompt_ms":[],"generation_ms":[],
                      "prompt_tps":[],"generation_tps":[],"continuations":0,"rounds":[],
-                     "plan_covered":0,"plan_total":0,"answer_covered":0} for mode in modes}
+                     "plan_covered":0,"plan_total":0,"answer_covered":0,
+                     "relation_covered":0,"relation_total":0} for mode in modes}
         retrieval_hits=0
         with tempfile.TemporaryDirectory() as td:
             store=Store(Path(td)/"rag.sqlite3")
@@ -123,6 +124,11 @@ def main():
                     mode_stats["plan_total"] += len(requirements)
                     mode_stats["plan_covered"] += sum(1 for slot in requirements if slot not in missing)
                     mode_stats["answer_covered"] += sum(1 for slot in requirements if slot not in answer_missing)
+                    relation_specs=plan.get("relation_requirements", [])
+                    relation_missing=_missing_relations(case["question"], answer, result["retrieval"].accepted)
+                    mode_stats["relation_total"] += len(relation_specs)
+                    mode_stats["relation_covered"] += sum(1 for spec in relation_specs
+                        if "relation:"+spec["id"] not in relation_missing)
                     rounds=result.get("generation_rounds", [])
                     round_count = len(rounds) if isinstance(rounds, list) else int(rounds or 0)
                     mode_stats["rounds"].append(round_count)
@@ -144,6 +150,10 @@ def main():
                         "grounded_requirements":[slot for slot in requirements if slot not in missing],
                         "missing_requirements":sorted(missing),
                         "missing_answer_requirements":sorted(answer_missing),
+                        "expected_relation_ids":[spec["id"] for spec in plan.get("relation_requirements", [])],
+                        "missing_answer_relations":sorted(relation_missing),
+                        "answer_relation_coverage":(1.0 if not relation_specs else
+                            round(sum(1 for spec in relation_specs if "relation:"+spec["id"] not in relation_missing)/len(relation_specs),4)),
                         "request_ms":round(total_ms,2),"generation_rounds":round_count,
                         "continuation_count":max(0,round_count-1),
                         "generated_tokens":sum(m["generated_tokens"] for m in call_metrics),
@@ -161,6 +171,8 @@ def main():
                 "evidence_requirement_coverage":round(st["plan_covered"]/st["plan_total"],4) if st["plan_total"] else None,
                 "answer_requirement_coverage":round(st["answer_covered"]/st["plan_total"],4) if st["plan_total"] else None,
                 "answer_requirement_count":st["plan_total"],
+                "answer_relation_coverage":round(st["relation_covered"]/st["relation_total"],4) if st["relation_total"] else None,
+                "answer_relation_count":st["relation_total"],
                 "answer_status_counts":st["statuses"],
                 "continuation_rate":round(st["continuations"]/len(CASES),4),
                 "mean_generation_rounds":round(statistics.mean(st["rounds"]),2),
