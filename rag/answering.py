@@ -119,9 +119,9 @@ def _generation_contamination_reason(candidate: str, question: str,
     if re.search(r"(?:あなたは|出力規則|次の情報だけを使って|根拠だけを使い|確定済み回答|未充足の項目|追加回答本文|参照資料|質問本文)", value):
         return "echoed_instruction"
     # Reject role-prefixed or structured prompt fragments, not just angle-bracket tags.
-    if re.search(r"(?im)^\\s*(?:system|assistant|user|developer)\\s*[:：]", value):
+    if re.search(r"(?im)^\s*(?:system|assistant|user|developer)\s*[:：]", value):
         return "role_echo"
-    if re.search(r"(?im)^\\s*(?:根拠資料|回答計画|要求属性|不足項目|追加文|出力規則)\\s*[:：]", value):
+    if re.search(r"(?im)^\s*(?:根拠資料|回答計画|要求属性|不足項目|追加文|出力規則)\s*[:：]", value):
         return "prompt_structure"
     return None
 
