@@ -357,7 +357,7 @@ def _clean_generation_delta(candidate: str, question: str) -> str:
     cleaned = []
     for line in text.splitlines():
         value = line.strip()
-        if not value or value == "[CONTINUATION]" or re.match(r"^\\[根拠\\d+\\]", value):
+        if not value or value == "[CONTINUATION]" or re.match(r"^\[根拠\d+\]", value):
             continue
         if re.match(r"^(?:Q|質問|根拠資料?|回答計画|要求属性)[:：]", value, re.I):
             continue
