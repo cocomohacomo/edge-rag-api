@@ -75,7 +75,7 @@ class CoreTests(unittest.TestCase):
             return '' if len(calls) == 1 else '全く関係のない回答です。'
         result = answer_with_pipeline('会議の担当者と提出期限は？', hits, broken, retry=True, continuation=False, prefer_evidence_assembly=False)
         self.assertEqual(len(calls), 2)
-        self.assertEqual(result['status'], 'evidence_assembled')
+        self.assertEqual(result['status'], 'generation_incomplete')
         self.assertIn('佐藤', result['answer'])
         self.assertIn('minutes.md', result['answer'])
 
@@ -96,7 +96,7 @@ class CoreTests(unittest.TestCase):
         result = answer_with_pipeline('会議の担当者と提出期限は？', hits,
                                       lambda _prompt: calls.append(1) or '', continuation=False)
         self.assertEqual(len(calls), 1)
-        self.assertEqual(result['status'], 'evidence_assembled')
+        self.assertEqual(result['status'], 'generation_incomplete')
 
     def test_validator_rejects_internal_model_tags(self):
         hits = [{'source': 'offline.md', 'text': '初回導入後はオフラインで動作する。'}]
@@ -189,7 +189,7 @@ class CoreTests(unittest.TestCase):
             return {'content': '今日は晴れです。<CONTINUE>',
                     'stopped_limit': True, 'tokens_predicted': 48, 'n_predict': 48}
         result = answer_with_pipeline('CPUのみで動く実行方式は？', hits, generator)
-        self.assertEqual(result['status'], 'evidence_assembled')
+        self.assertEqual(result['status'], 'generation_incomplete')
         self.assertEqual(len(calls), 1)
         self.assertIn('CPU', result['answer'])
 
@@ -203,7 +203,7 @@ class CoreTests(unittest.TestCase):
             return {'content': '担当者は佐藤です。<CONTINUE>',
                     'stopped_limit': True, 'tokens_predicted': 32, 'n_predict': 32}
         result = answer_with_pipeline('会議の担当者と提出期限は？', hits, generator)
-        self.assertEqual(result['status'], 'extractive_fallback')
+        self.assertEqual(result['status'], 'generation_incomplete')
         self.assertEqual(len(calls), 1)
 
     def test_truncated_grounded_sentence_continues_without_control_marker(self):
@@ -323,7 +323,7 @@ class CoreTests(unittest.TestCase):
                                       retry=True, continuation=True, max_continuations=2,
                                       prefer_evidence_assembly=False)
         self.assertEqual(len(calls), 1)
-        self.assertEqual(result['status'], 'extractive_fallback')
+        self.assertEqual(result['status'], 'generation_error')
         self.assertEqual(result['generation_rounds'][0]['state'], 'generation_error')
         self.assertEqual(result['reason'], 'generation_error')
 
