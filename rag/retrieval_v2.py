@@ -35,11 +35,15 @@ def normalize_query(query: str) -> str:
 
 def expand_query(query: str) -> list[str]:
     """Return unique original and conservative Japanese synonym terms."""
-    terms = list(dict.fromkeys(japanese_terms(normalize_query(query))))
+    normalized = normalize_query(query)
+    terms = list(dict.fromkeys(japanese_terms(normalized)))
     expanded = list(terms)
-    for term in terms:
-        for synonym in _SYNONYMS.get(term, ()):
-            expanded.extend(japanese_terms(synonym))
+    # Match multi-character concepts before tokenization; Japanese bigrams
+    # otherwise split "インデックス" and "構築" into fragments.
+    for concept, synonyms in _SYNONYMS.items():
+        if concept in normalized:
+            for synonym in synonyms:
+                expanded.extend(japanese_terms(synonym))
     return list(dict.fromkeys(expanded))
 
 
