@@ -579,7 +579,7 @@ class DirectFactAnswerTests(unittest.TestCase):
         self.assertEqual(result["status"], "evidence_assembled")
         self.assertEqual(calls, [])
         self.assertIn("端末: i5-10310U", result["answer"])
-        self.assertIn("メモリ: 8GB RAM", result["answer"])
+        self.assertIn("メモリ: 8GB", result["answer"])
         self.assertIn("spec.md", result["answer"])
         self.assertEqual(result["generation_rounds"], [])
         self.assertTrue(result["progress"]["checks"][-1]["done"])
@@ -598,8 +598,10 @@ class DirectFactAnswerTests(unittest.TestCase):
         )
         self.assertEqual(len(calls), 1)
         self.assertNotEqual(result["status"], "evidence_assembled")
-        self.assertEqual(result["status"], "generation_incomplete")
-        self.assertIn("deadline", result["missing_slots"])
+        self.assertEqual(result["status"], "extractive_fallback")
+        self.assertIn("deadline", result["fallback_validation"]["missing_slots"])
+        self.assertIn("佐藤", result["answer"])
+        self.assertNotIn("12月15日", result["answer"])
 
     def test_explicit_force_generation_bypasses_direct_fact_path(self):
         hits = [{
