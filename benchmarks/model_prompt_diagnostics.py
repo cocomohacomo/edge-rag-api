@@ -76,7 +76,7 @@ def main():
                     "model": Path(args.model).name,
                     "messages": [
                         {"role": "system", "content": "根拠に忠実な日本語回答器です。根拠にある事実だけを回答してください。"},
-                        {"role": "user", "content": question + "\\n根拠: 担当者は佐藤です。"},
+                        {"role": "user", "content": question + "\n根拠: 担当者は佐藤です。"},
                     ],
                     "temperature": 0.0, "max_tokens": 48, "seed": 42,
                 })
