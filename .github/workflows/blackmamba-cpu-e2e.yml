@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y build-essential cmake git libcurl4-openssl-dev
-      - name: Build BlackMamba-capable llama.cpp fork (CPU)
+      - name: Build CPU llama.cpp fork (BlackMamba compatibility probe)
         run: |
           git clone --depth 1 https://github.com/1bit-MONSTER/llama.cpp.git llama.cpp
           cmake -S llama.cpp -B llama.cpp/build -DGGML_NATIVE=OFF -DGGML_OPENMP=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF
@@ -47,7 +47,8 @@ jobs:
             --max-tokens 48 \
             --output blackmamba-rag-e2e-results.json \
             --server-log blackmamba-server.log
-      - name: Upload BlackMamba report
+      - name: Upload BlackMamba diagnostics (even on failure)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: blackmamba-rag-e2e-diagnostics
@@ -55,4 +56,3 @@ jobs:
             blackmamba-rag-e2e-results.json
             blackmamba-server.log
           if-no-files-found: warn
-          if: always()
