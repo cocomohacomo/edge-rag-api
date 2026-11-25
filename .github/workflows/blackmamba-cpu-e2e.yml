@@ -45,7 +45,7 @@ jobs:
             --threads 2 \
             --ctx 2048 \
             --max-tokens 48 \
-            --output blackmamba-rag-e2e-results.json \\
+            --output blackmamba-rag-e2e-results.json \
             --server-log blackmamba-server.log
       - name: Upload BlackMamba report
         uses: actions/upload-artifact@v4
