@@ -28,7 +28,7 @@ jobs:
       - name: Build BlackMamba-capable llama.cpp fork (CPU)
         run: |
           git clone --depth 1 https://github.com/1bit-MONSTER/llama.cpp.git llama.cpp
-          cmake -S llama.cpp -B llama.cpp/build -DGGML_NATIVE=OFF -DGGML_OPENMP=ON
+          cmake -S llama.cpp -B llama.cpp/build -DGGML_NATIVE=OFF -DGGML_OPENMP=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF
           cmake --build llama.cpp/build --config Release -j 4 --target llama-server
       - uses: actions/setup-python@v5
         with:
