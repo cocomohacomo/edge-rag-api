@@ -74,7 +74,8 @@ def main():
                 hits, retrieval_diagnostics = search_with_diagnostics(store, q, 12)
                 result = answer_with_pipeline(
                     q, hits, generator,
-                    force_generation=(generator is not None),
+                    force_generation=False,
+                    prefer_evidence_assembly=True,
                     continuation=True, max_continuations=2,
                 )
                 answer = result["answer"]

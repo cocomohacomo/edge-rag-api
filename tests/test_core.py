@@ -411,7 +411,7 @@ class CoreTests(unittest.TestCase):
             return "検索方式はSQLite FTS5です。"
         result = answer_with_pipeline(
             "検索方式は何ですか？", hits, generator,
-            prefer_evidence_assembly=True,
+            prefer_evidence_assembly=False,
         )
         self.assertEqual(result["status"], "generated")
         self.assertEqual(len(calls), 1)
@@ -563,6 +563,63 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn("<CONTINUE>", prompt)
 
 
+
+class DirectFactAnswerTests(unittest.TestCase):
+    def test_complete_unique_facts_bypass_llm_and_keep_provenance(self):
+        hits = [{
+            "score": .9, "source": "spec.md",
+            "text": "対象端末はIntel i5-10310U。メモリ要件は8GB RAM。"
+        }]
+        calls = []
+        result = answer_with_pipeline(
+            "端末とメモリは？", hits,
+            lambda prompt: calls.append(prompt) or "生成回答",
+            prefer_evidence_assembly=True, force_generation=False,
+        )
+        self.assertEqual(result["status"], "evidence_assembled")
+        self.assertEqual(calls, [])
+        self.assertIn("端末: i5-10310U", result["answer"])
+        self.assertIn("メモリ: 8GB RAM", result["answer"])
+        self.assertIn("spec.md", result["answer"])
+        self.assertEqual(result["generation_rounds"], [])
+        self.assertTrue(result["progress"]["checks"][-1]["done"])
+
+    def test_incomplete_facts_fall_through_to_bounded_llm_generation(self):
+        hits = [{
+            "score": .9, "source": "minutes.md",
+            "text": "会議の担当者は佐藤です。"
+        }]
+        calls = []
+        result = answer_with_pipeline(
+            "会議の担当者と提出期限は？", hits,
+            lambda prompt: calls.append(prompt) or "担当者は佐藤です。",
+            prefer_evidence_assembly=True, force_generation=False,
+            continuation=False,
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertNotEqual(result["status"], "evidence_assembled")
+        self.assertEqual(result["status"], "generation_incomplete")
+        self.assertIn("deadline", result["missing_slots"])
+
+    def test_explicit_force_generation_bypasses_direct_fact_path(self):
+        hits = [{
+            "score": .9, "source": "spec.md",
+            "text": "検索方式はSQLite FTS5を使用する。"
+        }]
+        calls = []
+        result = answer_with_pipeline(
+            "検索方式は何ですか？", hits,
+            lambda prompt: calls.append(prompt) or {
+                "content": "検索方式はSQLite FTS5です。<END_ANSWER>",
+                "tokens_predicted": 8, "n_predict": 32, "stop": True,
+            },
+            prefer_evidence_assembly=True, force_generation=True,
+            continuation=False,
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["status"], "generated")
+
+
 if __name__ == '__main__':
     unittest.main()
 
@@ -607,7 +664,7 @@ class EvidenceLedgerArchitectureTests(unittest.TestCase):
             calls.append(prompt)
             return "方式はSQLite FTS5です。"
         result = answer_with_pipeline("方式は何ですか？", hits, generator,
-                                    prefer_evidence_assembly=True)
+                                    prefer_evidence_assembly=False)
         self.assertEqual(len(calls), 1)
         self.assertEqual(result["status"], "generated")
         self.assertIn("Evidence", calls[0]) if "Evidence" in calls[0] else self.assertIn("EVIDENCE_LEDGER_JSON", calls[0])

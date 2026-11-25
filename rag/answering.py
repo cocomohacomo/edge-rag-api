@@ -610,7 +610,7 @@ def answer_with_pipeline(
     retry: bool = False,
     continuation: bool = True,
     max_continuations: int = 2,
-    prefer_evidence_assembly: bool = True,
+    prefer_evidence_assembly: bool = False,
     force_generation: bool = True,
 ) -> dict:
     """Evidence gate -> mandatory-by-default LLM loop -> validated result.
@@ -635,6 +635,31 @@ def answer_with_pipeline(
                 "attribute_ledger": attribute_ledger,
                 "attribute_validation": attribute_validation,
                 "progress": build_progress_summary(plan, validated=False)}
+
+    # Deterministic fast path: if every requested attribute and relation is
+    # uniquely supported, answer directly from the validated evidence ledger.
+    # Explicit force_generation callers retain the model-only path for A/B tests.
+    if prefer_evidence_assembly and not force_generation:
+        assembled = assemble_evidence_answer(plan)
+        assembled_valid = (
+            bool(assembled)
+            and validate_answer(assembled, question, selected)[0]
+            and validate_composed_answer(assembled, attribute_ledger, attribute_validation)[0]
+            and not _missing_relations(question, assembled, selected)
+        )
+        if assembled_valid:
+            return {
+                "answer": assembled,
+                "status": "evidence_assembled",
+                "reason": "all_requested_facts_uniquely_supported",
+                "retrieval": decision,
+                "generation_rounds": [],
+                "missing_slots": [],
+                "answer_plan": plan,
+                "attribute_ledger": attribute_ledger,
+                "attribute_validation": attribute_validation,
+                "progress": build_progress_summary(plan, validated=True),
+            }
 
     if generator is None:
         return {"answer": ABSTAIN, "status": "generation_unavailable",
