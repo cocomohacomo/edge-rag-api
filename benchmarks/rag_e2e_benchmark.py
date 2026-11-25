@@ -61,15 +61,20 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=48)
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--output", default="rag-e2e-results.json")
+    ap.add_argument("--server-log", default="llama-server.log")
     args=ap.parse_args()
     server=[args.server,"-m",args.model,"--host","127.0.0.1","--port",str(args.port),"-t",str(args.threads),"-c",str(args.ctx),"-ngl","0"]
     started=time.perf_counter()
-    proc=subprocess.Popen(server,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    server_log = open(args.server_log, "w", encoding="utf-8")
+    proc=subprocess.Popen(server,stdout=server_log,stderr=subprocess.STDOUT)
     base=f"http://127.0.0.1:{args.port}"
     try:
         ready=False
         for _ in range(180):
-            if proc.poll() is not None: raise RuntimeError(f"llama-server exited: {proc.returncode}")
+            if proc.poll() is not None:
+                server_log.flush()
+                tail = Path(args.server_log).read_text(encoding="utf-8", errors="replace").splitlines()[-100:]
+                raise RuntimeError(f"llama-server exited: {proc.returncode}; log tail:\\n" + "\\n".join(tail))
             try:
                 get_json(base+"/health",timeout=2); ready=True; break
             except Exception: time.sleep(1)
@@ -248,6 +253,7 @@ def main():
         proc.terminate()
         try: proc.wait(timeout=20)
         except subprocess.TimeoutExpired: proc.kill(); proc.wait()
+        server_log.close()
         child=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
         print(f"LLAMA_SERVER_CHILD_PEAK_RSS_MB={child/1024:.2f}")
 
