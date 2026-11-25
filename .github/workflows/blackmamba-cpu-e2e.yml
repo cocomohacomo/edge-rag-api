@@ -7,6 +7,11 @@ on:
       - ".github/workflows/blackmamba-cpu-e2e.yml"
       - "benchmarks/rag_e2e_benchmark.py"
       - "rag/**"
+  pull_request:
+    paths:
+      - ".github/workflows/blackmamba-cpu-e2e.yml"
+      - "benchmarks/rag_e2e_benchmark.py"
+      - "rag/**"
   workflow_dispatch:
 
 permissions:
