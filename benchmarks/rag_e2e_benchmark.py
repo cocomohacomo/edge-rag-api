@@ -146,6 +146,14 @@ def main():
                     mode_stats["rejected_deltas"] += len(rejected_rounds)
                     mode_stats["contaminated_cases"] += int(bool(contamination_rounds))
                     output_contamination = _generation_contamination_reason(answer, case["question"])
+                    control_markers = ("<|im_start|>", "<|im_end|>", "<|endoftext|>", "[INST]", "[/INST]", "<<SYS>>")
+                    prompt_headers = ("質問:", "質問本文", "参照資料", "回答本文", "回答:")
+                    output_defects = {
+                        "control_token_leak": any(token in answer for token in control_markers),
+                        "prompt_header_echo": any(header in answer for header in prompt_headers),
+                        "evidence_repetition": any(answer.count(term) > 1 for term in case["terms"]),
+                        "empty_output": not answer.strip(),
+                    }
                     if mode != "evidence_assembly" and result["retrieval"].accepted:
                         mode_stats["generation_eligible_cases"] += 1
                         mode_stats["generation_invoked_cases"] += int(generation_attempts > 0)
@@ -180,6 +188,7 @@ def main():
                         "answer":answer,"answer_status":status,"answer_reason":result["reason"],
                         "generation_contamination":[rd.get("contamination_reason") for rd in contamination_rounds],
                         "output_contamination":output_contamination,
+                        "output_defects":output_defects,
                         "expected_fact":case["answer"],
                         "fact_terms_found":sum(term.lower() in answer.lower() for term in case["terms"]),
                         "fact_terms_total":len(case["terms"]),"grounded_exact_terms":ok,
@@ -213,6 +222,7 @@ def main():
                 "answer_relation_count":st["relation_total"],
                 "answer_status_counts":st["statuses"],
                 "contaminated_cases":st["contaminated_cases"],
+                "output_defect_counts":{key:sum(1 for row in rows if row["mode"]==mode and row.get("output_defects",{}).get(key)) for key in ("control_token_leak","prompt_header_echo","evidence_repetition","empty_output")},
                 "contaminated_rounds":st["contaminated_rounds"],
                 "rejected_deltas":st["rejected_deltas"],
                 "prompt_contamination_free":st["contaminated_cases"] == 0,
