@@ -70,6 +70,25 @@ def main():
                 "llama_inst": f"[INST] {question} 根拠: 担当者は佐藤です。 [/INST]",
             }
             results = {}
+            # Exercise the model/server-provided chat template separately from raw completion.
+            try:
+                chat = request(base + "/v1/chat/completions", {
+                    "model": Path(args.model).name,
+                    "messages": [
+                        {"role": "system", "content": "根拠に忠実な日本語回答器です。根拠にある事実だけを回答してください。"},
+                        {"role": "user", "content": question + "\\n根拠: 担当者は佐藤です。"},
+                    ],
+                    "temperature": 0.0, "max_tokens": 48, "seed": 42,
+                })
+                results["server_native_chat_template"] = {
+                    "raw_response": chat,
+                    "raw_output": (((chat.get("choices") or [{}])[0].get("message") or {}).get("content", "")),
+                    "finish_reason": (chat.get("choices") or [{}])[0].get("finish_reason"),
+                }
+            except Exception as exc:
+                results["server_native_chat_template"] = {
+                    "error": type(exc).__name__, "message": str(exc)
+                }
             for name, prompt in prompts.items():
                 try:
                     result = request(base + "/completion", {
@@ -78,6 +97,7 @@ def main():
                     })
                     results[name] = {
                         "prompt": prompt,
+                        "raw_response": result,
                         "raw_output": result.get("content", result.get("raw", "")),
                         "stop": result.get("stop"),
                         "stop_type": result.get("stop_type"),
