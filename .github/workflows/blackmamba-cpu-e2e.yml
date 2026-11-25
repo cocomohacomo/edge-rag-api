@@ -1,0 +1,49 @@
+name: BlackMamba CPU RAG E2E
+
+on:
+  push:
+    branches: [feature/standalone-windows-rag]
+    paths:
+      - ".github/workflows/blackmamba-cpu-e2e.yml"
+      - "benchmarks/rag_e2e_benchmark.py"
+      - "rag/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  blackmamba-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake git libcurl4-openssl-dev
+      - name: Build BlackMamba-capable llama.cpp fork (CPU)
+        run: |
+          git clone --depth 1 https://github.com/1bit-MONSTER/llama.cpp.git llama.cpp
+          cmake -S llama.cpp -B llama.cpp/build -DGGML_NATIVE=OFF -DGGML_OPENMP=ON
+          cmake --build llama.cpp/build --config Release -j 4 --target llama-server
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Download BlackMamba 1.5B GGUF
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          hf download 1bit-MONSTER/BlackMamba-1.5B-GGUF BlackMamba-1.5B-Q8_0.gguf --local-dir models
+      - name: Run RAG E2E on BlackMamba
+        run: |
+          python benchmarks/rag_e2e_benchmark.py \
+            --model models/BlackMamba-1.5B-Q8_0.gguf \
+            --server llama.cpp/build/bin/llama-server \
+            --threads 2 \
+            --ctx 2048 \
+            --max-tokens 48 \
+            --output blackmamba-rag-e2e-results.json
+      - name: Upload BlackMamba report
+        uses: actions/upload-artifact@v4
+        with:
+          name: blackmamba-rag-e2e-results
+          path: blackmamba-rag-e2e-results.json
+          if-no-files-found: error
