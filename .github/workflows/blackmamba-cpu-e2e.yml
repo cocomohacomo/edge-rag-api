@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/blackmamba-cpu-e2e.yml"
       - "benchmarks/rag_e2e_benchmark.py"
+      - "benchmarks/model_prompt_diagnostics.py"
       - "rag/**"
   pull_request:
     paths:
@@ -63,4 +64,6 @@ jobs:
           path: |
             blackmamba-rag-e2e-results.json
             blackmamba-server.log
+            blackmamba-prompt-diagnostics.json
+            blackmamba-prompt-diagnostics-server.log
           if-no-files-found: warn
