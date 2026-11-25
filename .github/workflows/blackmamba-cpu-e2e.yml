@@ -45,10 +45,14 @@ jobs:
             --threads 2 \
             --ctx 2048 \
             --max-tokens 48 \
-            --output blackmamba-rag-e2e-results.json \\\n            --server-log blackmamba-server.log
+            --output blackmamba-rag-e2e-results.json \\
+            --server-log blackmamba-server.log
       - name: Upload BlackMamba report
         uses: actions/upload-artifact@v4
         with:
-          name: blackmamba-rag-e2e-results
-          path: blackmamba-rag-e2e-results.json
-          if-no-files-found: error
+          name: blackmamba-rag-e2e-diagnostics
+          path: |
+            blackmamba-rag-e2e-results.json
+            blackmamba-server.log
+          if-no-files-found: warn
+          if: always()
