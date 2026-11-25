@@ -42,6 +42,9 @@ jobs:
         run: |
           python -m pip install --upgrade huggingface_hub
           hf download 1bit-MONSTER/BlackMamba-1.5B-GGUF BlackMamba-1.5B-Q8_0.gguf --local-dir models
+      - name: Diagnose BlackMamba prompt formats and stop behavior
+        run: |
+          python benchmarks/model_prompt_diagnostics.py --model models/BlackMamba-1.5B-Q8_0.gguf --server llama.cpp/build/bin/llama-server --threads 2 --ctx 2048 --output blackmamba-prompt-diagnostics.json --log blackmamba-prompt-diagnostics-server.log
       - name: Run RAG E2E on BlackMamba
         run: |
           python benchmarks/rag_e2e_benchmark.py \
