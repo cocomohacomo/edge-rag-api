@@ -63,11 +63,6 @@ def main():
                     "回答本文だけを簡潔に出力してください。\n"
                     f"質問本文\n{question}\n参照資料\n担当者は佐藤です。\n回答本文\n"
                 ),
-                "chatml_user_assistant": (
-                    f"<|im_start|>user\n{question}\n根拠: 担当者は佐藤です。"
-                    "<|im_end|>\n<|im_start|>assistant\n"
-                ),
-                "llama_inst": f"[INST] {question} 根拠: 担当者は佐藤です。 [/INST]",
             }
             results = {}
             # Exercise the model/server-provided chat template separately from raw completion.
@@ -110,6 +105,23 @@ def main():
                 except Exception as exc:
                     results[name] = {"error": type(exc).__name__, "message": str(exc)}
 
+            # Classify output defects independently; never infer EOS from finish_reason alone.
+            control_markers = ("<|im_start|>", "<|im_end|>", "<|endoftext|>", "[INST]", "[/INST]", "<<SYS>>")
+            prompt_headers = ("質問:", "質問本文", "参照資料", "回答本文", "回答:")
+            for item in results.values():
+                output = str(item.get("raw_output", ""))
+                item["contamination"] = {
+                    "control_token_leak": any(token in output for token in control_markers),
+                    "prompt_header_echo": any(header in output for header in prompt_headers),
+                    "evidence_repetition": output.count("担当者は佐藤です") > 1,
+                    "empty_output": not output.strip(),
+                }
+                item["termination_class"] = (
+                    "length_limit" if item.get("finish_reason") == "length" or item.get("stopped_limit") is True
+                    else "eos" if item.get("stopped_eos") is True
+                    else "stop_sequence" if item.get("stopped_word") is True
+                    else "unknown"
+                )
             report = {
                 "model": Path(args.model).name,
                 "threads": args.threads,
