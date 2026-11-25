@@ -1,0 +1,140 @@
+name: RWKV7 model download and CPU inference benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      generation_tokens:
+        description: Tokens to generate per prompt
+        required: false
+        default: "128"
+  push:
+    branches:
+      - feature/standalone-windows-rag
+    paths:
+      - .github/workflows/rwkv7-model-benchmark.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rwkv7-benchmark-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rwkv7-cpu:
+    # Hosted runner is a reproducibility/smoke-test host, NOT the user's i5-10310U.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      MODEL_REPO: shoumenchougou/RWKV7-G1l-1.5B-GGUF
+      MODEL_FILE: rwkv7-g1l-1.5b-Q4_K_M.gguf
+      MODEL_SHA256: fbe32c9df26130d8df18bc452f4c30ea36da53806c1e4f722c65e6cc18c74ac3
+      GEN_TOKENS: ${{ github.event.inputs.generation_tokens || '128' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show runner
+        run: |
+          uname -a
+          lscpu
+          free -h
+          df -h .
+
+      - name: Download GGUF from Hugging Face and verify SHA256
+        run: |
+          set -euo pipefail
+          mkdir -p models artifacts
+          URL="https://huggingface.co/${MODEL_REPO}/resolve/main/${MODEL_FILE}?download=true"
+          echo "Downloading ${MODEL_REPO}/${MODEL_FILE}"
+          /usr/bin/time -f 'download_elapsed_seconds=%e' \
+            curl -fL --retry 3 --retry-delay 2 "$URL" -o "models/${MODEL_FILE}"
+          echo "${MODEL_SHA256}  models/${MODEL_FILE}" | sha256sum -c -
+          stat -c 'model_bytes=%s' "models/${MODEL_FILE}" | tee artifacts/model-size.txt
+          sha256sum "models/${MODEL_FILE}" | tee artifacts/model-sha256.txt
+
+      - name: Build llama.cpp CPU runtime
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git runtime
+          cmake -S runtime -B runtime/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_NATIVE=OFF \
+            -DGGML_OPENMP=ON \
+            -DLLAMA_CURL=OFF
+          cmake --build runtime/build --config Release --parallel 2 --target llama-cli
+          runtime/build/bin/llama-cli --version | tee artifacts/runtime-version.txt
+
+      - name: Run CPU inference and collect timings/RSS
+        id: inference
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          BIN="$PWD/runtime/build/bin/llama-cli"
+          MODEL="$PWD/models/${MODEL_FILE}"
+          run_case() {
+            NAME="$1"
+            PROMPT="$2"
+            echo "===== ${NAME} ====="
+            /usr/bin/time -v -o "artifacts/${NAME}-time.txt" \
+              "$BIN" -m "$MODEL" -p "$PROMPT" -n "$GEN_TOKENS" -t 2 \
+              --temp 0 --seed 42 --no-display-prompt --no-warmup \
+              2>&1 | tee "artifacts/${NAME}-output.txt"
+            RC=${PIPESTATUS[0]}
+            echo "${NAME}_exit_code=${RC}" | tee -a artifacts/summary.txt
+            return 0
+          }
+          run_case short "日本語の文章を要約してください。人工知能は情報を整理し、必要な知識を検索する技術です。"
+          run_case medium "$(python3 - <<'PY'
+          print(("日本語の技術文書です。検索拡張生成は文書を分割し、関連情報を検索して回答を生成します。"*80))
+          PY
+          )"
+          run_case long "$(python3 - <<'PY'
+          print(("日本語の長文ベンチマーク入力です。モデルの入力処理速度とメモリ使用量を測定します。"*320))
+          PY
+          )"
+
+      - name: Summarize benchmark
+        if: always()
+        run: |
+          {
+            echo "# RWKV7 CPU benchmark"
+            echo
+            echo "- Runner: `ubuntu-latest` (hosted; not i5-10310U)"
+            echo "- Model: ${MODEL_REPO}/${MODEL_FILE}"
+            echo "- Generation tokens: ${GEN_TOKENS}"
+            echo
+            echo "## Runtime"
+            cat artifacts/runtime-version.txt 2>/dev/null || true
+            echo
+            echo "## Model"
+            cat artifacts/model-size.txt artifacts/model-sha256.txt 2>/dev/null || true
+            echo
+            echo "## Timing and memory"
+            for f in artifacts/*-time.txt; do
+              [ -f "$f" ] || continue
+              echo "### $f"
+              grep -E 'Elapsed (wall clock)|Maximum resident set size|User time|System time|Exit status' "$f" || true
+            done
+            echo
+            echo "## Inference output tail"
+            for f in artifacts/*-output.txt; do
+              [ -f "$f" ] || continue
+              echo "### $f"
+              tail -n 35 "$f"
+            done
+          } > artifacts/REPORT.md
+          cat artifacts/REPORT.md
+
+      - name: Upload benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rwkv7-cpu-benchmark
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Fail if inference did not run successfully
+        if: steps.inference.outcome == 'failure'
+        run: exit 1

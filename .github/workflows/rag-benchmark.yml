@@ -1,0 +1,45 @@
+name: RAG Retrieval Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      documents:
+        description: "Synthetic document count"
+        required: false
+        default: "10000"
+      queries:
+        description: "Search query count"
+        required: false
+        default: "1000"
+  push:
+    branches: [feature/standalone-windows-rag]
+    paths:
+      - "benchmarks/**"
+      - ".github/workflows/rag-benchmark.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Run synthetic retrieval benchmark
+        run: |
+          python benchmarks/rag_benchmark.py \
+            --documents "${{ inputs.documents || '10000' }}" \
+            --queries "${{ inputs.queries || '1000' }}" \
+            --output benchmark-results.json
+      - name: Upload benchmark report
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-benchmark-results
+          path: benchmark-results.json
+          if-no-files-found: error

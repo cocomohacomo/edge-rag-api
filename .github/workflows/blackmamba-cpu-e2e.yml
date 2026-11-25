@@ -1,0 +1,87 @@
+name: BlackMamba CPU RAG E2E
+
+on:
+  push:
+    branches: [feature/standalone-windows-rag]
+    paths:
+      - ".github/workflows/blackmamba-cpu-e2e.yml"
+      - "benchmarks/rag_e2e_benchmark.py"
+      - "benchmarks/model_prompt_diagnostics.py"
+      - ".github/workflows/rwkv7-model-benchmark.yml"
+      - "rag/**"
+  pull_request:
+    paths:
+      - ".github/workflows/blackmamba-cpu-e2e.yml"
+      - "benchmarks/rag_e2e_benchmark.py"
+      - "rag/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  blackmamba-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake git libcurl4-openssl-dev
+      - name: Checkout BlackMamba-capable llama.cpp fork and pin
+        run: |
+          git clone https://github.com/1bit-MONSTER/llama.cpp.git llama.cpp
+          git -C llama.cpp checkout 8a5e8d8ae71394b27a3a0aa1810c2b4c0c8f3775
+          git -C llama.cpp rev-parse HEAD
+          grep -R -n blackmamba llama.cpp/src/llama-arch.cpp llama.cpp/src/llama-model.cpp
+      - name: Build CPU llama.cpp fork
+        run: |
+          cmake -S llama.cpp -B llama.cpp/build -DGGML_NATIVE=OFF -DGGML_OPENMP=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF
+          cmake --build llama.cpp/build --config Release -j 4 --target llama-server
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Download BlackMamba 1.5B GGUF
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          hf download 1bit-MONSTER/BlackMamba-1.5B-GGUF BlackMamba-1.5B-Q8_0.gguf --local-dir models
+      - name: Diagnose BlackMamba prompt formats and stop behavior
+        run: |
+          python benchmarks/model_prompt_diagnostics.py --model models/BlackMamba-1.5B-Q8_0.gguf --server llama.cpp/build/bin/llama-server --threads 2 --ctx 2048 --output blackmamba-prompt-diagnostics.json --log blackmamba-prompt-diagnostics-server.log
+      - name: Run RAG E2E on BlackMamba
+        run: |
+          python benchmarks/rag_e2e_benchmark.py \
+            --model models/BlackMamba-1.5B-Q8_0.gguf \
+            --server llama.cpp/build/bin/llama-server \
+            --threads 2 \
+            --ctx 2048 \
+            --max-tokens 48 \
+            --output blackmamba-rag-e2e-results.json \
+            --server-log blackmamba-server.log
+      - name: Download RWKV7 Q4_K_M GGUF
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          hf download shoumenchougou/RWKV7-G1l-1.5B-GGUF rwkv7-g1l-1.5b-Q4_K_M.gguf --local-dir models
+      - name: Run identical RAG E2E on RWKV7
+        run: |
+          python benchmarks/rag_e2e_benchmark.py \
+            --model models/rwkv7-g1l-1.5b-Q4_K_M.gguf \
+            --server llama.cpp/build/bin/llama-server \
+            --threads 2 \
+            --ctx 2048 \
+            --max-tokens 48 \
+            --port 8082 \
+            --output rwkv7-rag-e2e-results.json \
+            --server-log rwkv7-server.log
+      - name: Upload BlackMamba diagnostics (even on failure)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blackmamba-rag-e2e-diagnostics
+          path: |
+            blackmamba-rag-e2e-results.json
+            blackmamba-server.log
+            blackmamba-prompt-diagnostics.json
+            blackmamba-prompt-diagnostics-server.log
+            rwkv7-rag-e2e-results.json
+            rwkv7-server.log
+          if-no-files-found: warn
