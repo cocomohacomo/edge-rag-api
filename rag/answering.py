@@ -191,7 +191,7 @@ CONTINUE_MARKER = "<CONTINUE>"
 def _strip_control_markers(text: str) -> tuple[str, str | None]:
     """Remove exactly one terminal protocol marker; preserve embedded tags for rejection."""
     value = (text or "").rstrip()
-    match = re.search(r"(?:<END_ANSWER>|<CONTINUE>|<CONTINUATION>)\\s*$", value)
+    match = re.search(r"(?:<END_ANSWER>|<CONTINUE>|<CONTINUATION>)\s*$", value)
     if not match:
         return value.strip(), None
     marker = match.group(0)
