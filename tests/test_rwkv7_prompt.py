@@ -5,6 +5,7 @@ from rag.answering import (
     format_rwkv7_completion_prompt,
     _prompt_question,
     _is_truncated,
+    validate_answer,
 )
 
 
@@ -53,6 +54,18 @@ class RWKV7PromptTests(unittest.TestCase):
         self.assertTrue(_is_truncated({
             "stop": False, "tokens_predicted": 48, "n_predict": 48,
         }))
+        self.assertTrue(_is_truncated({
+            "stop": True, "stop_type": "limit",
+            "tokens_predicted": 48, "n_predict": 48,
+        }))
+        self.assertEqual(
+            validate_answer(
+                "担当者は佐藤です。", "担当者は誰ですか。",
+                [{"source": "minutes.md", "text": "担当者は佐藤です。"}],
+                {"stop": True, "stop_type": "limit", "tokens_predicted": 48, "n_predict": 48},
+            )[1],
+            "token_limit",
+        )
 
     def test_unknown_style_is_rejected(self):
         with self.assertRaises(ValueError):
