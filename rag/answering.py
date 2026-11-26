@@ -26,7 +26,8 @@ try:
     from .quality_metrics import evaluate_attribute_completeness, validate_attribute_claims
     from .core import japanese_terms
 except ImportError:  # direct execution via rag/cli.py
-    from quality_metrics import evaluate_attribute_completeness, validate_attribute_claims\n    from core import japanese_terms
+    from quality_metrics import evaluate_attribute_completeness, validate_attribute_claims
+    from core import japanese_terms
 
 
 ABSTAIN = "関連する根拠が十分ではないため、回答できません。"
