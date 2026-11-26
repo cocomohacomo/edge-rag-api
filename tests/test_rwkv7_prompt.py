@@ -19,7 +19,7 @@ class RWKV7PromptTests(unittest.TestCase):
 
     def test_fewshot_uses_native_role_prefix_and_keeps_evidence(self):
         prompt = build_rwkv7_prompt(self.legacy, "rwkv7_fewshot")
-        self.assertTrue(prompt.startswith("User:\n"))
+        self.assertTrue(prompt.startswith("User: "))
         self.assertTrue(prompt.endswith("\n\nAssistant:"))
         self.assertIn("例:", prompt)
         self.assertIn("担当者は佐藤です。", prompt)
@@ -29,7 +29,7 @@ class RWKV7PromptTests(unittest.TestCase):
 
     def test_legacy_json_preserves_original_payload(self):
         prompt = build_rwkv7_prompt(self.legacy, "legacy_json")
-        self.assertTrue(prompt.startswith("User:\n"))
+        self.assertTrue(prompt.startswith("User: "))
         self.assertIn("EVIDENCE_LEDGER_JSON", prompt)
         self.assertIn("ATTRIBUTE_BINDINGS_JSON", prompt)
 
@@ -37,11 +37,11 @@ class RWKV7PromptTests(unittest.TestCase):
         self.assertEqual(_prompt_question(self.legacy), "担当者は誰ですか。")
 
     def test_completion_wrapper_is_idempotent(self):
-        prompt = "User:\n質問: X\n\nAssistant:"
+        prompt = "User: 質問: X\n\nAssistant:"
         self.assertEqual(format_rwkv7_completion_prompt(prompt), prompt)
         self.assertEqual(
             format_rwkv7_completion_prompt("質問: X"),
-            "User:\n質問: X\n\nAssistant:",
+            "User: 質問: X\n\nAssistant:",
         )
 
     def test_unknown_style_is_rejected(self):
