@@ -36,7 +36,6 @@ def build_attribute_ledger(plan: dict, hits: Iterable[dict]) -> dict:
                         bindings.append(binding)
                     if value not in distinct:
                         distinct.append(value)
-        # Multiple candidates from one passage are not contradictory evidence.
         value_evidence = {}
         for binding in bindings:
             value_evidence.setdefault(binding["value"], set()).add(binding["evidence_id"])
@@ -78,6 +77,7 @@ def validate_attribute_ledger(ledger: dict) -> dict:
 
 
 def build_composer_prompt(base_prompt: str, ledger: dict, validation: dict) -> str:
+    """Ask the model to design a sentence skeleton before inserting verified facts."""
     import json
     allowed = []
     by_name = {x["attribute"]: x for x in ledger.get("attributes", [])}
@@ -85,12 +85,22 @@ def build_composer_prompt(base_prompt: str, ledger: dict, validation: dict) -> s
         item = by_name.get(name, {})
         allowed.append({"attribute": name, "value": item.get("values", [None])[0],
                         "evidence": item.get("bindings", [])})
+    template_policy = (
+        "\n回答文の作成手順:\n"
+        "1. まず質問に適した短い日本語の回答文テンプレートを内部で設計する。"
+        "テンプレートには属性ごとの差し込み位置を設ける。\n"
+        "2. 差し込み位置にはATTRIBUTE_BINDINGS_JSONで検証済みの属性値だけを入れる。"
+        "値の言い換え、補完、推測、単位変更は禁止。\n"
+        "3. 全ての検証済み属性が一度ずつ含まれることを確認してから完成文を出力する。\n"
+        "例: 「担当者は{owner}です。期限は{deadline}です。」"
+        "の骨格を作り、確認済みの値を差し込んで完成させる。"
+        "波括弧のプレースホルダー自体は最終回答に残さない。\n"
+        "最終出力は完成した回答本文だけとし、テンプレート・手順・属性一覧は出力しない。"
+        "根拠にない説明や一般論を追加しない。\n"
+    )
     return (base_prompt + "\nATTRIBUTE_BINDINGS_JSON (verified data only):\n"
             + json.dumps(allowed, ensure_ascii=False, separators=(",", ":"))
-            + "\n短い事実を列挙して回答してください。"
-              "形式は「属性: 値」の箇条書き。1項目1行、説明・前置き・結論・一般論は不要。"
-              "検証済み属性だけを使い、値は原文どおり転記。未充足属性を推測・補完しない。"
-              "複数属性は全て列挙し、最後に句点を付けて終了してください。\n")
+            + template_policy)
 
 
 def validate_composed_answer(answer: str, ledger: dict, validation: dict) -> tuple[bool, str]:
@@ -104,11 +114,12 @@ def validate_composed_answer(answer: str, ledger: dict, validation: dict) -> tup
         values = by_name.get(name, {}).get("values", [])
         if len(values) != 1 or values[0] not in text:
             return False, "verified_attribute_missing:" + str(name)
-    # Unsupported attribute values are never allowed to leak into the final answer.
     for name in validation.get("insufficient", []):
         values = by_name.get(name, {}).get("values", [])
         if any(value and value in text for value in values):
             return False, "unverified_attribute:" + str(name)
     if re.search(r"</?(?:system|assistant|developer|instruction|think|analysis)[^>]*>", text, re.I):
         return False, "control_or_role_tag"
+    if re.search(r"\{\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\}", text):
+        return False, "unfilled_template_placeholder"
     return True, "accepted"
