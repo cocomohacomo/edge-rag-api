@@ -87,6 +87,12 @@ def _prompt_question(prompt: str) -> str:
                 return str(value["question"]).strip()
         except (json.JSONDecodeError, TypeError):
             pass
+    # In canonical few-shot conversations, the final User turn is the live query.
+    if "\n\nUser: " in (prompt or ""):
+        user_turn = (prompt or "").rsplit("\n\nUser: ", 1)[-1]
+        match = re.search(r"(?:^|\n)質問:\s*(.*?)\s*(?:\n根拠:|\Z)", user_turn, re.S)
+        if match:
+            return match.group(1).strip()
     return (prompt or "").split("\nQ:", 1)[-1].split("\n根拠:", 1)[0].strip()
 
 
