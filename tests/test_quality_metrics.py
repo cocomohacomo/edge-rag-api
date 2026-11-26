@@ -135,6 +135,28 @@ class AttributeCompletenessTests(unittest.TestCase):
         self.assertFalse(result["final_output_gate"]["passed"])
         self.assertTrue(result["generation_rounds"][-1]["truncated"])
 
+    def test_main_generation_token_limit_cannot_be_accepted_as_complete(self):
+        hits = [{
+            "source": "meeting.txt",
+            "text": "担当者は佐藤です。期限は12月15日です。",
+            "score": 1.0,
+        }]
+        result = answer_with_pipeline(
+            "担当者と期限は？",
+            hits,
+            generator=lambda prompt: {
+                "content": "担当者は佐藤です。期限は12月15日です。",
+                "stop_type": "limit",
+                "truncated": True,
+            },
+            continuation=False,
+            force_generation=True,
+        )
+        self.assertEqual(result["answer"], ABSTAIN)
+        self.assertEqual(result["status"], "generation_incomplete")
+        self.assertFalse(result["final_output_gate"]["passed"])
+        self.assertFalse(result["final_output_gate"]["checks"]["completion_confirmed"])
+
     def test_non_forced_generation_cannot_leak_failed_candidate(self):
         hits = [{
             "source": "meeting.txt",
