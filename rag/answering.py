@@ -158,7 +158,7 @@ def build_rwkv7_prompt(prompt: str, style: str = "rwkv7_fewshot") -> str:
             )
     if body.startswith("User:") and body.rstrip().endswith("Assistant:"):
         return body
-    return "User:\n" + body.strip() + "\n\nAssistant:"
+    return "User: " + body.strip() + "\n\nAssistant:"
 
 
 def format_rwkv7_completion_prompt(prompt: str) -> str:
@@ -166,7 +166,7 @@ def format_rwkv7_completion_prompt(prompt: str) -> str:
     value = (prompt or "").strip()
     if value.startswith("User:") and value.rstrip().endswith("Assistant:"):
         return value
-    return "User:\n" + value + "\n\nAssistant:"
+    return "User: " + value + "\n\nAssistant:"
 
 
 
