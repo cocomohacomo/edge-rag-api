@@ -697,6 +697,52 @@ def extractive_fallback(question: str, hits: Iterable[dict], max_sentences: int 
     return "\n".join(selected) if selected else ABSTAIN
 
 
+def _evaluate_final_output(
+    candidate: str,
+    question: str,
+    selected: list[dict],
+    attribute_ledger: dict,
+    attribute_validation: dict,
+    *,
+    completion_confirmed: bool,
+) -> dict:
+    """Apply the same fail-closed contract to generated and deterministic answers."""
+    text = str(candidate or "").strip()
+    grounded, grounding_reason = validate_answer(text, question, selected)
+    attributes_valid, attribute_reason = validate_composed_answer(
+        text, attribute_ledger, attribute_validation
+    )
+    completeness = evaluate_attribute_completeness(
+        attribute_ledger, attribute_validation, text
+    )
+    claims = validate_attribute_claims(text, attribute_ledger, attribute_validation)
+    missing_slots = _missing_slots(question, text, selected)
+    missing_relations = _missing_relations(question, text, selected)
+    checks = {
+        "non_empty": bool(text) and text != ABSTAIN,
+        "answer_grounded": grounded,
+        "attributes_valid": attributes_valid,
+        "claims_valid": claims["valid"],
+        "attributes_complete": (
+            completeness["completeness_rate"] == 1.0
+            if completeness["supported_count"] else True
+        ),
+        "requirements_complete": not missing_slots and not missing_relations,
+        "terminal_punctuation": bool(re.search(r"[。！？!?）」』】]$", text)),
+        "completion_confirmed": bool(completion_confirmed),
+    }
+    return {
+        "passed": all(checks.values()),
+        "checks": checks,
+        "grounding_reason": grounding_reason,
+        "attribute_reason": attribute_reason,
+        "completeness": completeness,
+        "claims": claims,
+        "missing_slots": missing_slots,
+        "missing_relations": missing_relations,
+    }
+
+
 def answer_with_pipeline(
     question: str,
     hits: Iterable[dict],
@@ -737,13 +783,11 @@ def answer_with_pipeline(
     # Explicit force_generation callers retain the model-only path for A/B tests.
     if prefer_evidence_assembly and not force_generation:
         assembled = assemble_evidence_answer(plan)
-        assembled_valid = (
-            bool(assembled)
-            and validate_answer(assembled, question, selected)[0]
-            and validate_composed_answer(assembled, attribute_ledger, attribute_validation)[0]
-            and not _missing_relations(question, assembled, selected)
+        assembled_gate = _evaluate_final_output(
+            assembled, question, selected, attribute_ledger, attribute_validation,
+            completion_confirmed=True,
         )
-        if assembled_valid:
+        if assembled_gate["passed"]:
             return {
                 "answer": assembled,
                 "status": "evidence_assembled",
@@ -754,6 +798,9 @@ def answer_with_pipeline(
                 "answer_plan": plan,
                 "attribute_ledger": attribute_ledger,
                 "attribute_validation": attribute_validation,
+                "attribute_completeness": assembled_gate["completeness"],
+                "attribute_claim_validation": assembled_gate["claims"],
+                "final_output_gate": {"passed": True, "checks": assembled_gate["checks"]},
                 "progress": build_progress_summary(plan, validated=True),
             }
 
@@ -838,12 +885,14 @@ def answer_with_pipeline(
         rounds[-1]["validation_reason"] = last_reason
         rounds[-1]["numeric_diagnostics"] = _numeric_claim_diagnostics(accumulated, selected)
         rounds[-1]["completion_signal"] = marker or ("punctuation" if text_complete else None)
-        attribute_ok, attribute_reason = validate_composed_answer(accumulated, attribute_ledger, attribute_validation)
-        completeness = evaluate_attribute_completeness(attribute_ledger, attribute_validation, accumulated)
-        claim_validation = validate_attribute_claims(accumulated, attribute_ledger, attribute_validation)
-        attribute_ok = attribute_ok and claim_validation["valid"] and (completeness["completeness_rate"] == 1.0 if completeness["supported_count"] else True)
-        rounds[-1]["attribute_validation"] = attribute_reason
-        if valid and attribute_ok and not missing and text_complete:
+        output_gate = _evaluate_final_output(
+            accumulated, question, selected, attribute_ledger, attribute_validation,
+            completion_confirmed=text_complete,
+        )
+        completeness = output_gate["completeness"]
+        claim_validation = output_gate["claims"]
+        rounds[-1]["attribute_validation"] = output_gate["attribute_reason"]
+        if output_gate["passed"]:
             rounds[-1]["state"] = "completed"
             state = "completed"
             return {"answer": accumulated.strip(), "status": "generated",
@@ -929,15 +978,18 @@ def answer_with_pipeline(
                     accumulated = candidate
         except Exception:
             pass
-    valid, validation_reason = validate_answer(accumulated, question, selected)
+    final_gate = _evaluate_final_output(
+        accumulated, question, selected, attribute_ledger, attribute_validation,
+        completion_confirmed=(state == "completed"),
+    )
+    validation_reason = final_gate["grounding_reason"]
     if state not in {"failed", "contaminated"}:
         last_reason = validation_reason
-    missing = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
-    attribute_ok, attribute_reason = validate_composed_answer(accumulated, attribute_ledger, attribute_validation)
-    final_completeness = evaluate_attribute_completeness(attribute_ledger, attribute_validation, accumulated)
-    final_claim_validation = validate_attribute_claims(accumulated, attribute_ledger, attribute_validation)
-    attribute_ok = attribute_ok and final_claim_validation["valid"] and (final_completeness["completeness_rate"] == 1.0 if final_completeness["supported_count"] else True)
-    if valid and attribute_ok and not missing and re.search(r"[。！？!?）」』】]$", accumulated.strip()):
+    missing = final_gate["missing_slots"] + final_gate["missing_relations"]
+    final_completeness = final_gate["completeness"]
+    final_claim_validation = final_gate["claims"]
+    attribute_reason = final_gate["attribute_reason"]
+    if final_gate["passed"]:
         return {"answer": accumulated.strip(), "status": "generated",
                 "reason": "semantic_completion", "retrieval": decision,
                 "generation_rounds": rounds, "missing_slots": [],
@@ -946,10 +998,10 @@ def answer_with_pipeline(
     # generation from a deterministic answer. Never hide a failed LLM attempt
     # by silently replacing it with evidence assembly.
     if force_generation:
-        draft_valid, draft_reason = validate_answer(accumulated, question, selected)
-        attribute_ok, attribute_reason = validate_composed_answer(accumulated, attribute_ledger, attribute_validation)
-        final_completeness = evaluate_attribute_completeness(attribute_ledger, attribute_validation, accumulated)
-        final_claim_validation = validate_attribute_claims(accumulated, attribute_ledger, attribute_validation)
+        draft_valid = final_gate["checks"]["answer_grounded"]
+        draft_reason = final_gate["grounding_reason"]
+        attribute_ok = final_gate["checks"]["attributes_valid"]
+        attribute_reason = final_gate["attribute_reason"]
         if state == "contaminated":
             forced_status = "generation_contaminated"
             forced_reason = last_reason
@@ -966,19 +1018,9 @@ def answer_with_pipeline(
         # may publish generated text. Every non-completed candidate is quarantined,
         # even when lexical grounding alone passes. This prevents placeholders,
         # partial answers, and failed-round prefixes from leaking to callers.
-        final_gate_checks = {
-            "answer_grounded": draft_valid,
-            "attributes_valid": attribute_ok,
-            "claims_valid": final_claim_validation["valid"],
-            "attributes_complete": (
-                final_completeness["completeness_rate"] == 1.0
-                if final_completeness["supported_count"] else True
-            ),
-            "requirements_complete": not missing,
-            "terminal_punctuation": bool(re.search(r"[。！？!?）」』】]$", accumulated.strip())),
-            "generation_state_completed": state == "completed",
-        }
-        final_gate_passed = all(final_gate_checks.values())
+        final_gate_checks = dict(final_gate["checks"])
+        final_gate_checks["generation_state_completed"] = state == "completed"
+        final_gate_passed = final_gate["passed"] and final_gate_checks["generation_state_completed"]
         visible_answer = accumulated.strip() if final_gate_passed else ABSTAIN
         return {"answer": visible_answer, "status": forced_status,
                 "reason": forced_reason, "validation_reason": draft_reason,
@@ -996,26 +1038,43 @@ def answer_with_pipeline(
                 "numeric_diagnostics": _numeric_claim_diagnostics(accumulated, selected)}
 
     assembled = assemble_evidence_answer(plan)
-    assembled_valid = (bool(assembled) and validate_answer(assembled, question, selected)[0]
-                       and not _missing_relations(question, assembled, selected))
-    if assembled_valid:
+    assembled_gate = _evaluate_final_output(
+        assembled, question, selected, attribute_ledger, attribute_validation,
+        completion_confirmed=True,
+    )
+    if assembled_gate["passed"]:
         return {"answer": assembled, "status": "evidence_assembled",
                 "reason": "generation_incomplete_but_requirements_have_direct_evidence",
                 "retrieval": decision, "generation_rounds": rounds, "missing_slots": [],
-                "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
+                "answer_plan": plan, "attribute_ledger": attribute_ledger,
+                "attribute_validation": attribute_validation,
+                "attribute_completeness": assembled_gate["completeness"],
+                "attribute_claim_validation": assembled_gate["claims"],
+                "final_output_gate": {"passed": True, "checks": assembled_gate["checks"]},
+                "progress": build_progress_summary(plan, validated=True)}
     fallback = extractive_fallback(question, selected, max_sentences=4)
-    fallback_missing_slots = _missing_slots(question, fallback, selected)
-    fallback_missing_relations = _missing_relations(question, fallback, selected)
-    fallback_complete = not fallback_missing_slots and not fallback_missing_relations
+    fallback_gate = _evaluate_final_output(
+        fallback, question, selected, attribute_ledger, attribute_validation,
+        completion_confirmed=True,
+    )
     fallback_reason = (last_reason if last_reason != "accepted" else "incomplete_answer")
+    if not fallback_gate["passed"]:
+        return {"answer": ABSTAIN, "status": "abstained",
+                "reason": "final_output_gate_rejected",
+                "retrieval": decision, "generation_rounds": rounds,
+                "missing_slots": fallback_gate["missing_slots"] + fallback_gate["missing_relations"],
+                "final_output_gate": {"passed": False, "checks": fallback_gate["checks"]},
+                "candidate_diagnostics": {"candidate": fallback, "quarantined": bool(fallback)},
+                "answer_plan": plan, "progress": build_progress_summary(plan, validated=False)}
     return {"answer": fallback, "status": "extractive_fallback",
             "reason": fallback_reason,
-            "retrieval": decision, "generation_rounds": rounds, "missing_slots": missing,
-            "fallback_validation": {"complete": fallback_complete,
-                "missing_slots": fallback_missing_slots,
-                "missing_relations": fallback_missing_relations},
+            "retrieval": decision, "generation_rounds": rounds,
+            "missing_slots": fallback_gate["missing_slots"] + fallback_gate["missing_relations"],
+            "attribute_completeness": fallback_gate["completeness"],
+            "attribute_claim_validation": fallback_gate["claims"],
+            "final_output_gate": {"passed": True, "checks": fallback_gate["checks"]},
             "numeric_diagnostics": _numeric_claim_diagnostics(accumulated, selected),
-            "answer_plan": plan, "progress": build_progress_summary(plan, validated=valid and not missing)}
+            "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
 
 
 def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: int = 64,
