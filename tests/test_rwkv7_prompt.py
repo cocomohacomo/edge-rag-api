@@ -22,7 +22,7 @@ class RWKV7PromptTests(unittest.TestCase):
         prompt = build_rwkv7_prompt(self.legacy, "rwkv7_fewshot")
         self.assertTrue(prompt.startswith("User: "))
         self.assertTrue(prompt.endswith("\n\nAssistant:"))
-        self.assertIn("例:", prompt)
+        self.assertIn("質問: 分類は何ですか。", prompt)
         self.assertIn("担当者は佐藤です。", prompt)
         self.assertIn("確認済み属性:", prompt)
         self.assertIn("質問: 担当者は誰ですか。", prompt)
