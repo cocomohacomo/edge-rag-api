@@ -73,6 +73,44 @@ class AttributeCompletenessTests(unittest.TestCase):
         self.assertFalse(result["final_output_gate"]["passed"])
         self.assertFalse(result["final_output_gate"]["checks"]["attributes_valid"])
 
+    def test_deterministic_evidence_assembly_uses_final_output_gate(self):
+        hits = [{
+            "source": "meeting.txt",
+            "text": "担当者は佐藤です。期限は12月15日です。",
+            "score": 1.0,
+        }]
+        result = answer_with_pipeline(
+            "担当者と期限は？",
+            hits,
+            generator=None,
+            force_generation=False,
+            prefer_evidence_assembly=True,
+        )
+        self.assertEqual(result["status"], "evidence_assembled")
+        self.assertTrue(result["final_output_gate"]["passed"])
+        self.assertIn("佐藤", result["answer"])
+        self.assertIn("12月15日", result["answer"])
+
+    def test_non_forced_generation_cannot_leak_failed_candidate(self):
+        hits = [{
+            "source": "meeting.txt",
+            "text": "担当者は佐藤です。期限は12月15日です。",
+            "score": 1.0,
+        }]
+        result = answer_with_pipeline(
+            "担当者と期限は？",
+            hits,
+            generator=lambda prompt: "担当者は{owner}です。期限は12月15日です。",
+            force_generation=False,
+            prefer_evidence_assembly=False,
+            continuation=False,
+        )
+        self.assertNotIn("{owner}", result["answer"])
+        if result["status"] == "extractive_fallback":
+            self.assertTrue(result["final_output_gate"]["passed"])
+        else:
+            self.assertEqual(result["answer"], ABSTAIN)
+
 
 if __name__ == "__main__":
     unittest.main()
