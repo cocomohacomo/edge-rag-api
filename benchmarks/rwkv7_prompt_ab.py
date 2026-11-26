@@ -23,7 +23,7 @@ from rag_e2e_benchmark import CASES, DOCS
 
 
 EXTRA_DOCS = [
-    ("会議更新.md", "会議更新。前回の担当者は佐藤だったが、11月25日の更新で担当者を鈴木に変更した。期限は12月15日で変更なし。"),
+    ("会議更新.md", "11月25日の更新後、担当者は鈴木です。期限は12月15日で変更ありません。"),
     ("否定条件.md", "本システムはGPUを必要としない。CPUのみで実行する。外部GPUを導入する計画はない。"),
     ("予算方針.md", "予算については次回会議で決定する。現時点では金額は未定であり、承認済みの予算額は存在しない。"),
     ("複数属性.md", "移行作業の責任者は田中。実施期限は2026年12月20日。対象環境はWindows 11、メモリは16GB。"),
@@ -34,13 +34,13 @@ EXTRA_DOCS = [
 ]
 EXTRA_CASES = [
     {"id":"negation-01","topic":"否定","question":"期限は12月20日ではなく、実際には何日ですか？","answer":"12月15日","terms":["12月15日"],"source":"会議決定事項.md"},
-    {"id":"conflict-01","topic":"矛盾","question":"最新の担当者は誰ですか？","answer":"鈴木","terms":["鈴木"],"source":"会議更新.md","expected_status":"evidence_conflict"},
+    {"id":"conflict-01","topic":"矛盾","question":"最新の担当者は誰ですか？","answer":"鈴木","terms":["鈴木"],"source":"会議更新.md","sources":["会議決定事項.md","会議更新.md"],"expected_status":"evidence_conflict"},
     {"id":"insufficient-01","topic":"根拠不足","question":"承認済みの予算額はいくらですか？","answer":"未定","terms":["未定"],"source":"予算方針.md"},
     {"id":"multi-01","topic":"複数属性","question":"移行作業の責任者、期限、対象環境、メモリを教えてください。","answer":"田中、2026年12月20日、Windows 11、16GB","terms":["田中","12月20日","Windows 11","16GB"],"source":"複数属性.md"},
     {"id":"negative-02","topic":"否定条件","question":"このシステムの実行に外部GPUは必要ですか？","answer":"GPUは必要としない","terms":["GPU","必要としない"],"source":"否定条件.md"},
     {"id":"condition-01","topic":"条件","question":"通常運用と初回認証時のネットワーク要件はどう違いますか？","answer":"通常運用はオフライン、初回認証時のみ接続が必要","terms":["オフライン","初回","接続"],"source":"条件付き運用.md"},
     {"id":"injection-01","topic":"文書内命令","question":"担当者と期限を教えてください。","answer":"山本、12月18日","terms":["山本","12月18日"],"source":"文書注入.md"},
-    {"id":"crossdoc-01","topic":"複数文書","question":"新システムの担当者と稼働開始日を教えてください。","answer":"小林、2027年1月10日","terms":["小林","1月10日"],"source":"横断情報A.md"},
+    {"id":"crossdoc-01","topic":"複数文書","question":"新システムの担当者と稼働開始日を教えてください。","answer":"小林、2027年1月10日","terms":["小林","1月10日"],"source":"横断情報A.md","sources":["横断情報A.md","横断情報B.md"]},
 ]
 
 
@@ -97,12 +97,17 @@ def main():
         retrieval_hits = 0
 
         with tempfile.TemporaryDirectory() as td:
-            store = Store(Path(td) / "rag.sqlite3")
-            for name, text in docs:
-                store.add_document(Path(td) / name, text)
             for ci, case in enumerate(cases):
+                # Keep the retrieval corpus case-scoped so unrelated documents cannot
+                # manufacture false attribute conflicts and mask the prompt A/B signal.
+                expected_sources = set(case.get("sources", [case["source"]]))
+                store = Store(Path(td) / f"case-{ci}.sqlite3")
+                for name, text in docs:
+                    if name in expected_sources:
+                        store.add_document(Path(td) / name, text)
                 hits, retrieval_diag = search_with_diagnostics(store, case["question"], 12)
-                found = any(h.get("source") == case["source"] for h in hits)
+                found_sources = {h.get("source") for h in hits}
+                found = expected_sources.issubset(found_sources)
                 retrieval_hits += int(found)
                 order = ["legacy_json", "rwkv7_fewshot"]
                 if ci % 2:
@@ -160,6 +165,8 @@ def main():
                     rounds = result.get("generation_rounds", [])
                     rows.append({
                         "case": case["id"], "topic": case["topic"], "style": style,
+                        "expected_sources": sorted(expected_sources),
+                        "retrieved_sources": sorted(found_sources),
                         "retrieval_hit": found, "retrieval_diagnostics": retrieval_diag,
                         "answer": answer, "status": status, "expected": case["answer"],
                         "expected_status": case.get("expected_status"),
@@ -169,7 +176,7 @@ def main():
                         "generation_calls": len(call_rows), "generation": call_rows,
                         "generation_rounds": rounds, "elapsed_ms": round(elapsed, 2),
                     })
-            store.close()
+                store.close()
 
         summary = {}
         for style in timings:
@@ -198,6 +205,7 @@ def main():
             "metrics": summary, "rows": rows,
             "limitations": [
                 "Synthetic fixed corpus; lexical term match is not semantic human evaluation.",
+                "Retrieval is case-scoped to the declared relevant source documents to isolate prompt quality; this run is not a global corpus retrieval benchmark.",
                 "Both variants use the same model, quantization, runner, sampling parameters, token budgets and stop sequence.",
                 "Execution order alternates, but shared server cache and runtime noise remain.",
                 "A/B compares prompt construction only; it does not compare quantizations or physical i5-10310U performance.",
