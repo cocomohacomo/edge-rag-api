@@ -59,8 +59,9 @@ def generation_budget(question: str, base_tokens: int = 64) -> int:
     q = question.strip()
     multi_attribute = bool(re.search(
         r"(担当者.*期限|期限.*担当者|方式.*要件|要件.*方式|端末.*メモリ|"
-        r"メモリ.*端末|実行方式.*CPU|CPU.*実行方式|と|、|及び|ならびに|"
-        r"それぞれ|複数|一覧|比較)", q
+        r"メモリ.*端末|実行方式.*CPU|CPU.*実行方式|"
+        r"(?:責任者|担当者|期限|端末|メモリ|環境).{0,12}と.{0,12}(?:責任者|担当者|期限|端末|メモリ|環境)|"
+        r"、|及び|ならびに|それぞれ|複数|一覧|比較)", q
     ))
     return min(base_tokens, 64) if multi_attribute or len(q) >= 28 else min(base_tokens, 32)
 
