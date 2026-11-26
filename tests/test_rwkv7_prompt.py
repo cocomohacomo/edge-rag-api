@@ -27,6 +27,7 @@ class RWKV7PromptTests(unittest.TestCase):
         self.assertIn("確認済み属性:", prompt)
         self.assertIn("質問: 担当者は誰ですか。", prompt)
         self.assertNotIn("EVIDENCE_LEDGER_JSON", prompt)
+        self.assertEqual(_prompt_question(prompt), "担当者は誰ですか。")
 
     def test_legacy_json_preserves_original_payload(self):
         prompt = build_rwkv7_prompt(self.legacy, "legacy_json")
