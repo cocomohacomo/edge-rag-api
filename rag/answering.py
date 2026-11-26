@@ -836,7 +836,7 @@ def answer_with_pipeline(
         rounds[-1]["validation_reason"] = last_reason
         rounds[-1]["numeric_diagnostics"] = _numeric_claim_diagnostics(accumulated, selected)
         rounds[-1]["completion_signal"] = marker or ("punctuation" if text_complete else None)
-        attribute_ok, attribute_reason = validate_composed_answer(accumulated, attribute_ledger, attribute_validation)\n        completeness = evaluate_attribute_completeness(attribute_ledger, attribute_validation, accumulated)\n        claim_validation = validate_attribute_claims(accumulated, attribute_ledger, attribute_validation)\n        attribute_ok = attribute_ok and claim_validation["valid"] and completeness["completeness_rate"] == 1.0
+        attribute_ok, attribute_reason = validate_composed_answer(accumulated, attribute_ledger, attribute_validation)\n        completeness = evaluate_attribute_completeness(attribute_ledger, attribute_validation, accumulated)\n        claim_validation = validate_attribute_claims(accumulated, attribute_ledger, attribute_validation)\n        attribute_ok = attribute_ok and claim_validation["valid"] and (completeness["completeness_rate"] == 1.0 if completeness["attribute_count"] else True)
         rounds[-1]["attribute_validation"] = attribute_reason
         if valid and attribute_ok and not missing and text_complete:
             rounds[-1]["state"] = "completed"
