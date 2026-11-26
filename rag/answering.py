@@ -982,7 +982,7 @@ def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: i
         payload = json.dumps({
             "prompt": format_rwkv7_completion_prompt(prompt), "n_predict": budget, "temperature": 0.0,
             "top_k": 1, "top_p": 1.0, "seed": 42, "cache_prompt": True,
-            "stop": ["\\n\\nUser:"],
+            "stop": ["\n\nUser:"],
         }, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(url, data=payload,
             headers={"Content-Type": "application/json"})
