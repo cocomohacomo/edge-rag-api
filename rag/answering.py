@@ -618,14 +618,10 @@ def validate_answer(answer: str, question: str, hits: Iterable[dict], generation
         return False, "prompt_contamination:" + contamination
     if not cleaned:
         return False, "empty"
-    if generation:
-        # llama.cpp reports stop=true for EOS/stop-word termination. A false
-        # value with all allocated tokens consumed is a hard truncation signal.
-        budget = int(generation.get("n_predict") or generation.get("budget") or 0)
-        predicted = int(generation.get("tokens_predicted") or generation.get("generated_tokens") or 0)
-        stopped = generation.get("stop")
-        if stopped is False or (budget and predicted >= budget and stopped is not True):
-            return False, "token_limit"
+    if generation and _is_truncated(generation):
+        # stop=true alone is not sufficient: llama.cpp may also set it when
+        # stop_type=limit. Prefer the explicit termination classification.
+        return False, "token_limit"
     if re.search(r"</?(?:system_thinking|think|answer|analysis)[^>]*>", cleaned, re.I):
         return False, "internal_tag"
     if re.search(r"(?:質問|根拠文書|Q|A)[:：]\s*$", cleaned):
