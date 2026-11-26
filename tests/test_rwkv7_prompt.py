@@ -49,7 +49,14 @@ class RWKV7PromptTests(unittest.TestCase):
 
     def test_explicit_stop_is_not_classified_as_truncation(self):
         self.assertFalse(_is_truncated({
+            "stop": True, "tokens_predicted": 47, "n_predict": 48,
+        }))
+        self.assertTrue(_is_truncated({
             "stop": True, "tokens_predicted": 48, "n_predict": 48,
+        }))
+        self.assertFalse(_is_truncated({
+            "stop": True, "stop_type": "eos",
+            "tokens_predicted": 48, "n_predict": 48,
         }))
         self.assertTrue(_is_truncated({
             "stop": False, "tokens_predicted": 48, "n_predict": 48,
