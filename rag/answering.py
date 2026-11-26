@@ -23,9 +23,9 @@ except ImportError:  # direct execution via rag/cli.py
     from evidence_ledger import build_evidence_ledger, render_ledger
 
 try:
-    from .core import japanese_terms
+    from .quality_metrics import evaluate_attribute_completeness, validate_attribute_claims\n    from .core import japanese_terms
 except ImportError:  # direct execution via rag/cli.py
-    from core import japanese_terms
+    from quality_metrics import evaluate_attribute_completeness, validate_attribute_claims\n    from core import japanese_terms
 
 
 ABSTAIN = "関連する根拠が十分ではないため、回答できません。"
@@ -836,7 +836,7 @@ def answer_with_pipeline(
         rounds[-1]["validation_reason"] = last_reason
         rounds[-1]["numeric_diagnostics"] = _numeric_claim_diagnostics(accumulated, selected)
         rounds[-1]["completion_signal"] = marker or ("punctuation" if text_complete else None)
-        attribute_ok, attribute_reason = validate_composed_answer(accumulated, attribute_ledger, attribute_validation)
+        attribute_ok, attribute_reason = validate_composed_answer(accumulated, attribute_ledger, attribute_validation)\n        completeness = evaluate_attribute_completeness(attribute_ledger, attribute_validation, accumulated)\n        claim_validation = validate_attribute_claims(accumulated, attribute_ledger, attribute_validation)\n        attribute_ok = attribute_ok and claim_validation["valid"] and completeness["completeness_rate"] == 1.0
         rounds[-1]["attribute_validation"] = attribute_reason
         if valid and attribute_ok and not missing and text_complete:
             rounds[-1]["state"] = "completed"
@@ -844,7 +844,7 @@ def answer_with_pipeline(
             return {"answer": accumulated.strip(), "status": "generated",
                     "reason": "semantic_completion", "retrieval": decision,
                     "generation_rounds": rounds, "missing_slots": [],
-                    "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "progress": build_progress_summary(plan, validated=True)}
+                    "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "attribute_completeness": completeness, "attribute_claim_validation": claim_validation, "progress": build_progress_summary(plan, validated=True)}
 
         if not continuation or round_index + 1 >= max_rounds:
             rounds[-1]["state"] = "round_limit" if round_index + 1 >= max_rounds else "single_pass"
