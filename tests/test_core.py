@@ -606,7 +606,7 @@ class DirectFactAnswerTests(unittest.TestCase):
         self.assertNotEqual(result["status"], "evidence_assembled")
         # An extractive partial answer must not bypass the final completeness gate.
         self.assertEqual(result["status"], "abstained")
-        self.assertIn("deadline", result["fallback_validation"]["missing_slots"])
+        self.assertIn("deadline", result["missing_slots"])
         self.assertEqual(result["answer"], ABSTAIN)
 
     def test_explicit_force_generation_bypasses_direct_fact_path(self):
