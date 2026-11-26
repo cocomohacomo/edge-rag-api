@@ -179,6 +179,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result['status'], 'generation_incomplete')
         self.assertEqual(result['answer'], ABSTAIN)
         self.assertEqual(len(calls), 1)
+        self.assertEqual(result['generation_rounds'][0]['state'], 'completion_unconfirmed')
         self.assertNotIn('<CONTINUE>', result['answer'])
 
     def test_unsupported_partial_answer_does_not_trigger_continuation(self):
