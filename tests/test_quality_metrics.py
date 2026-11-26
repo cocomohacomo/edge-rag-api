@@ -1,6 +1,7 @@
 import unittest
 from rag.quality_metrics import evaluate_attribute_completeness, validate_attribute_claims
 from rag.attribute_validation import build_composer_prompt, validate_composed_answer
+from rag.answering import ABSTAIN, answer_with_pipeline
 
 
 class AttributeCompletenessTests(unittest.TestCase):
@@ -51,6 +52,26 @@ class AttributeCompletenessTests(unittest.TestCase):
         )
         self.assertFalse(valid)
         self.assertEqual(reason, "unfilled_template_placeholder")
+
+    def test_failed_final_gate_quarantines_placeholder_candidate(self):
+        hits = [{
+            "source": "meeting.txt",
+            "text": "担当者は佐藤です。期限は12月15日です。",
+            "score": 1.0,
+        }]
+        result = answer_with_pipeline(
+            "担当者と期限は？",
+            hits,
+            generator=lambda prompt: "担当者は{owner}です。期限は12月15日です。",
+            force_generation=True,
+            continuation=False,
+        )
+        self.assertNotEqual(result["status"], "generated")
+        self.assertEqual(result["answer"], ABSTAIN)
+        self.assertTrue(result["candidate_diagnostics"]["quarantined"])
+        self.assertIn("{owner}", result["candidate_diagnostics"]["candidate"])
+        self.assertFalse(result["final_output_gate"]["passed"])
+        self.assertFalse(result["final_output_gate"]["checks"]["attributes_valid"])
 
 
 if __name__ == "__main__":
