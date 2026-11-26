@@ -898,7 +898,7 @@ def answer_with_pipeline(
             return {"answer": accumulated.strip(), "status": "generated",
                     "reason": "semantic_completion", "retrieval": decision,
                     "generation_rounds": rounds, "missing_slots": [],
-                    "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "attribute_completeness": completeness, "attribute_claim_validation": claim_validation, "progress": build_progress_summary(plan, validated=True)}
+                    "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "attribute_completeness": completeness, "attribute_claim_validation": claim_validation, "final_output_gate": {"passed": True, "checks": output_gate["checks"]}, "progress": build_progress_summary(plan, validated=True)}
 
         if not continuation or round_index + 1 >= max_rounds:
             rounds[-1]["state"] = "round_limit" if round_index + 1 >= max_rounds else "single_pass"
