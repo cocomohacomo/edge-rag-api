@@ -953,24 +953,47 @@ def answer_with_pipeline(
         if state == "contaminated":
             forced_status = "generation_contaminated"
             forced_reason = last_reason
-            visible_answer = ABSTAIN
         elif state == "failed":
             forced_status = "generation_error"
             forced_reason = last_reason
-            visible_answer = accumulated.strip() if draft_valid and attribute_ok and final_claim_validation["valid"] and (final_completeness["completeness_rate"] == 1.0 if final_completeness["supported_count"] else True) else ABSTAIN
         else:
             forced_status = "generation_incomplete"
             forced_reason = (
                 "requirements_incomplete" if missing else
                 ("answer_not_grounded" if not draft_valid else "completion_not_confirmed")
             )
-            visible_answer = accumulated.strip() if draft_valid else ABSTAIN
+        # Final Output Gate: only the earlier fully validated "completed" path
+        # may publish generated text. Every non-completed candidate is quarantined,
+        # even when lexical grounding alone passes. This prevents placeholders,
+        # partial answers, and failed-round prefixes from leaking to callers.
+        final_gate_checks = {
+            "answer_grounded": draft_valid,
+            "attributes_valid": attribute_ok,
+            "claims_valid": final_claim_validation["valid"],
+            "attributes_complete": (
+                final_completeness["completeness_rate"] == 1.0
+                if final_completeness["supported_count"] else True
+            ),
+            "requirements_complete": not missing,
+            "terminal_punctuation": bool(re.search(r"[。！？!?）」』】]$", accumulated.strip())),
+            "generation_state_completed": state == "completed",
+        }
+        final_gate_passed = all(final_gate_checks.values())
+        visible_answer = accumulated.strip() if final_gate_passed else ABSTAIN
         return {"answer": visible_answer, "status": forced_status,
                 "reason": forced_reason, "validation_reason": draft_reason,
                 "retrieval": decision, "generation_rounds": rounds,
                 "missing_slots": missing, "answer_plan": plan,
                 "progress": build_progress_summary(plan, validated=False),
-                "attribute_validation_reason": attribute_reason, "attribute_completeness": final_completeness, "attribute_claim_validation": final_claim_validation, "numeric_diagnostics": _numeric_claim_diagnostics(accumulated, selected)}
+                "attribute_validation_reason": attribute_reason,
+                "attribute_completeness": final_completeness,
+                "attribute_claim_validation": final_claim_validation,
+                "final_output_gate": {"passed": final_gate_passed, "checks": final_gate_checks},
+                "candidate_diagnostics": {
+                    "candidate": accumulated.strip(),
+                    "quarantined": bool(accumulated.strip()) and not final_gate_passed,
+                },
+                "numeric_diagnostics": _numeric_claim_diagnostics(accumulated, selected)}
 
     assembled = assemble_evidence_answer(plan)
     assembled_valid = (bool(assembled) and validate_answer(assembled, question, selected)[0]
