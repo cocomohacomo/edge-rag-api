@@ -109,6 +109,8 @@ def validate_composed_answer(answer: str, ledger: dict, validation: dict) -> tup
         return False, "empty"
     if validation.get("has_conflict"):
         return False, "attribute_conflict"
+    if re.search(r"\{\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\}", text):
+        return False, "unfilled_template_placeholder"
     by_name = {x["attribute"]: x for x in ledger.get("attributes", [])}
     for name in validation.get("supported", []):
         values = by_name.get(name, {}).get("values", [])
@@ -120,6 +122,4 @@ def validate_composed_answer(answer: str, ledger: dict, validation: dict) -> tup
             return False, "unverified_attribute:" + str(name)
     if re.search(r"</?(?:system|assistant|developer|instruction|think|analysis)[^>]*>", text, re.I):
         return False, "control_or_role_tag"
-    if re.search(r"\{\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\}", text):
-        return False, "unfilled_template_placeholder"
     return True, "accepted"
