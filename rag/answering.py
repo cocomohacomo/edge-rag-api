@@ -934,11 +934,14 @@ def answer_with_pipeline(
         last_reason = validation_reason
     missing = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
     attribute_ok, attribute_reason = validate_composed_answer(accumulated, attribute_ledger, attribute_validation)
+    final_completeness = evaluate_attribute_completeness(attribute_ledger, attribute_validation, accumulated)
+    final_claim_validation = validate_attribute_claims(accumulated, attribute_ledger, attribute_validation)
+    attribute_ok = attribute_ok and final_claim_validation["valid"] and (final_completeness["completeness_rate"] == 1.0 if final_completeness["supported_count"] else True)
     if valid and attribute_ok and not missing and re.search(r"[。！？!?）」』】]$", accumulated.strip()):
         return {"answer": accumulated.strip(), "status": "generated",
                 "reason": "semantic_completion", "retrieval": decision,
                 "generation_rounds": rounds, "missing_slots": [],
-                "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "progress": build_progress_summary(plan, validated=True)}
+                "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "attribute_completeness": final_completeness, "attribute_claim_validation": final_claim_validation, "progress": build_progress_summary(plan, validated=True)}
     # Generation-required callers must be able to distinguish an incomplete
     # generation from a deterministic answer. Never hide a failed LLM attempt
     # by silently replacing it with evidence assembly.
