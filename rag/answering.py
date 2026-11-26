@@ -907,6 +907,14 @@ def answer_with_pipeline(
                     "generation_rounds": rounds, "missing_slots": [],
                     "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "attribute_completeness": completeness, "attribute_claim_validation": claim_validation, "final_output_gate": {"passed": True, "checks": output_gate["checks"]}, "progress": build_progress_summary(plan, validated=True)}
 
+        # If no answer requirement remains missing, another generation pass
+        # cannot add verified coverage. In particular, a token-limited answer
+        # with complete-looking punctuation must be rejected without looping.
+        if not missing:
+            rounds[-1]["state"] = "completion_unconfirmed"
+            state = "exhausted"
+            break
+
         if not continuation or round_index + 1 >= max_rounds:
             rounds[-1]["state"] = "round_limit" if round_index + 1 >= max_rounds else "single_pass"
             state = "exhausted"
