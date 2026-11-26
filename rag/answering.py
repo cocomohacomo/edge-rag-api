@@ -881,7 +881,7 @@ def answer_with_pipeline(
             accumulated = proposed
         valid, last_reason = validate_answer(accumulated, question, selected)
         missing = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
-        text_complete = marker == "end" or bool(re.search(r"[。！？!?）」』】]$", accumulated.strip()))
+        text_complete = not truncated and (marker == "end" or bool(re.search(r"[。！？!?）」』】]$", accumulated.strip())))
         rounds[-1]["validation_reason"] = last_reason
         rounds[-1]["numeric_diagnostics"] = _numeric_claim_diagnostics(accumulated, selected)
         rounds[-1]["completion_signal"] = marker or ("punctuation" if text_complete else None)
@@ -970,8 +970,9 @@ def answer_with_pipeline(
             else:
                 candidate, marker = _strip_control_markers(candidate)
                 candidate = _clean_generation_delta(candidate, question)
-                retry_complete = marker == "end" or bool(
-                    re.search(r"[。！？!?）」』】]$", candidate.strip())
+                retry_truncated = _is_truncated(metadata)
+                retry_complete = not retry_truncated and (
+                    marker == "end" or bool(re.search(r"[。！？!?）」』】]$", candidate.strip()))
                 )
                 retry_gate = _evaluate_final_output(
                     candidate, question, selected, attribute_ledger, attribute_validation,
@@ -981,7 +982,7 @@ def answer_with_pipeline(
                     "state": "completed" if retry_gate["passed"] else "rejected",
                     "marker": marker,
                     "completion_signal": marker or ("punctuation" if retry_complete else None),
-                    "truncated": _is_truncated(metadata),
+                    "truncated": retry_truncated,
                     "final_output_gate": retry_gate["checks"],
                 })
                 if retry_gate["passed"]:
