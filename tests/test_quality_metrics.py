@@ -91,6 +91,26 @@ class AttributeCompletenessTests(unittest.TestCase):
         self.assertIn("佐藤", result["answer"])
         self.assertIn("12月15日", result["answer"])
 
+    def test_retry_candidate_must_pass_the_same_final_output_gate(self):
+        hits = [{
+            "source": "meeting.txt",
+            "text": "担当者は佐藤です。期限は12月15日です。",
+            "score": 1.0,
+        }]
+        responses = iter(["", "担当者は佐藤です。期限は12月15日です。"])
+        result = answer_with_pipeline(
+            "担当者と期限は？",
+            hits,
+            generator=lambda prompt: next(responses),
+            retry=True,
+            continuation=False,
+            force_generation=True,
+        )
+        self.assertEqual(result["status"], "generated")
+        self.assertEqual(result["answer"], "担当者は佐藤です。期限は12月15日です。")
+        self.assertTrue(result["final_output_gate"]["passed"])
+        self.assertTrue(result["generation_rounds"][-1]["retry"])
+
     def test_non_forced_generation_cannot_leak_failed_candidate(self):
         hits = [{
             "source": "meeting.txt",
