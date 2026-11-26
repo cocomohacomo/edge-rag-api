@@ -189,13 +189,14 @@ CONTINUE_MARKER = "<CONTINUE>"
 
 
 def _strip_control_markers(text: str) -> tuple[str, str | None]:
-    """Compatibility parser for one terminal protocol marker."""
-    legacy_continue = "<CONTINUATION>"
-    state = ("continue" if CONTINUE_MARKER in text or legacy_continue in text
-             else ("end" if END_MARKER in text else None))
-    cleaned = (text.replace(END_MARKER, "").replace(CONTINUE_MARKER, "")
-               .replace(legacy_continue, "").strip())
-    return cleaned, state
+    """Remove exactly one terminal protocol marker; preserve embedded tags for rejection."""
+    value = (text or "").rstrip()
+    match = re.search(r"(?:<END_ANSWER>|<CONTINUE>|<CONTINUATION>)\\s*$", value)
+    if not match:
+        return value.strip(), None
+    marker = match.group(0)
+    state = "continue" if marker in {CONTINUE_MARKER, "<CONTINUATION>"} else "end"
+    return value[:match.start()].strip(), state
 
 
 _PROMPT_TAG_RE = re.compile(r"</?\s*[A-Z][A-Z0-9_ -]*\s*>", re.I)
@@ -848,6 +849,9 @@ def answer_with_pipeline(
             state = "failed"
             break
 
+        # Parse only a terminal protocol marker before contamination checks.
+        # Embedded control tags remain in the text and are rejected.
+        candidate, marker = _strip_control_markers(candidate)
         contamination = _generation_contamination_reason(candidate, question, accumulated)
         truncated = _is_truncated(metadata)
         if contamination:
@@ -861,7 +865,6 @@ def answer_with_pipeline(
             last_reason = "prompt_contamination:" + contamination
             state = "contaminated"
             break
-        candidate, marker = _strip_control_markers(candidate)
         candidate = _clean_generation_delta(candidate, question)
         rounds.append({
             "round": round_index + 1,
@@ -977,13 +980,13 @@ def answer_with_pipeline(
         try:
             raw = generator(base_prompt + "\n根拠中の回答可能な事実だけを簡潔に回答してください。")
             candidate, metadata = _generation_payload(raw)
+            candidate, marker = _strip_control_markers(candidate)
             contamination = _generation_contamination_reason(candidate, question)
             if contamination:
                 retry_round.update({"state": "contaminated", "contamination_reason": contamination})
                 state = "contaminated"
                 last_reason = "prompt_contamination:" + contamination
             else:
-                candidate, marker = _strip_control_markers(candidate)
                 candidate = _clean_generation_delta(candidate, question)
                 retry_truncated = _is_truncated(metadata)
                 retry_complete = not retry_truncated and (
