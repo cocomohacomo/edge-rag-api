@@ -105,11 +105,19 @@ class AttributeCompletenessTests(unittest.TestCase):
             prefer_evidence_assembly=False,
             continuation=False,
         )
+        # The failed model candidate must never escape. In non-forced mode,
+        # however, a separately assembled evidence answer is an allowed recovery
+        # path when it independently passes the exact same final output gate.
         self.assertNotIn("{owner}", result["answer"])
-        if result["status"] == "extractive_fallback":
+        self.assertNotIn("担当者は{owner}", result["answer"])
+        if result["status"] in {"evidence_assembled", "extractive_fallback"}:
             self.assertTrue(result["final_output_gate"]["passed"])
+            self.assertIn("佐藤", result["answer"])
+            self.assertIn("12月15日", result["answer"])
         else:
+            self.assertEqual(result["status"], "abstained")
             self.assertEqual(result["answer"], ABSTAIN)
+            self.assertFalse(result["final_output_gate"]["passed"])
 
 
 if __name__ == "__main__":
