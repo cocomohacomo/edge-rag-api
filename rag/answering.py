@@ -702,7 +702,7 @@ def answer_with_pipeline(
     *,
     retry: bool = False,
     continuation: bool = True,
-    max_continuations: int = 2,
+    max_continuations: int = 1,
     prefer_evidence_assembly: bool = False,
     force_generation: bool = True,
     prompt_style: str = "rwkv7_fewshot",
@@ -940,6 +940,8 @@ def answer_with_pipeline(
     if force_generation:
         draft_valid, draft_reason = validate_answer(accumulated, question, selected)
         attribute_ok, attribute_reason = validate_composed_answer(accumulated, attribute_ledger, attribute_validation)
+        final_completeness = evaluate_attribute_completeness(attribute_ledger, attribute_validation, accumulated)
+        final_claim_validation = validate_attribute_claims(accumulated, attribute_ledger, attribute_validation)
         if state == "contaminated":
             forced_status = "generation_contaminated"
             forced_reason = last_reason
@@ -960,7 +962,7 @@ def answer_with_pipeline(
                 "retrieval": decision, "generation_rounds": rounds,
                 "missing_slots": missing, "answer_plan": plan,
                 "progress": build_progress_summary(plan, validated=False),
-                "attribute_validation_reason": attribute_reason, "numeric_diagnostics": _numeric_claim_diagnostics(accumulated, selected)}
+                "attribute_validation_reason": attribute_reason, "attribute_completeness": final_completeness, "attribute_claim_validation": final_claim_validation, "numeric_diagnostics": _numeric_claim_diagnostics(accumulated, selected)}
 
     assembled = assemble_evidence_answer(plan)
     assembled_valid = (bool(assembled) and validate_answer(assembled, question, selected)[0]
