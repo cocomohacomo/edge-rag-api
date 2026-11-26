@@ -484,6 +484,8 @@ def _is_truncated(metadata: dict) -> bool:
         return True
     if metadata.get("stop_type") in {"eos", "word"}:
         return False
+    if metadata.get("stop") is True:
+        return False
     if "stop" in metadata and metadata.get("stop") is False:
         return True
     budget = int(metadata.get("n_predict") or metadata.get("budget") or 0)
