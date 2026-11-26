@@ -4,6 +4,7 @@ from rag.answering import (
     build_rwkv7_prompt,
     format_rwkv7_completion_prompt,
     _prompt_question,
+    _is_truncated,
 )
 
 
@@ -43,6 +44,14 @@ class RWKV7PromptTests(unittest.TestCase):
             format_rwkv7_completion_prompt("質問: X"),
             "User: 質問: X\n\nAssistant:",
         )
+
+    def test_explicit_stop_is_not_classified_as_truncation(self):
+        self.assertFalse(_is_truncated({
+            "stop": True, "tokens_predicted": 48, "n_predict": 48,
+        }))
+        self.assertTrue(_is_truncated({
+            "stop": False, "tokens_predicted": 48, "n_predict": 48,
+        }))
 
     def test_unknown_style_is_rejected(self):
         with self.assertRaises(ValueError):
