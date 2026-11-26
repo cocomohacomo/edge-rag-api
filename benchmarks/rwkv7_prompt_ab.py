@@ -192,7 +192,18 @@ def main():
                 "status_counts": statuses[style],
                 "normal_termination_rate": round(sum(
                     1 for row in rows if row["style"] == style and row["generation"]
-                    and row["generation"][-1]["stop"] is True
+                    and (
+                        row["generation"][-1].get("stop_type") in {"eos", "word"}
+                        or row["generation"][-1].get("stopped_eos") is True
+                        or row["generation"][-1].get("stopped_word") is True
+                    )
+                ) / max(1, sum(1 for row in rows if row["style"] == style and row["generation"])), 4),
+                "token_limit_rate": round(sum(
+                    1 for row in rows if row["style"] == style and row["generation"]
+                    and (
+                        row["generation"][-1].get("stop_type") == "limit"
+                        or row["generation"][-1].get("stopped_limit") is True
+                    )
                 ) / max(1, sum(1 for row in rows if row["style"] == style and row["generation"])), 4),
             }
         report = {
