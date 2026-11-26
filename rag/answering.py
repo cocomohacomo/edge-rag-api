@@ -960,7 +960,7 @@ def answer_with_pipeline(
     if retry and not accumulated and state not in {"failed", "contaminated", "rejected"}:
         retry_round = {"round": len(rounds) + 1, "retry": True}
         try:
-            raw = generator(base_prompt + "\\n根拠中の回答可能な事実だけを簡潔に回答してください。")
+            raw = generator(base_prompt + "\n根拠中の回答可能な事実だけを簡潔に回答してください。")
             candidate, metadata = _generation_payload(raw)
             contamination = _generation_contamination_reason(candidate, question)
             if contamination:
