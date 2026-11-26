@@ -217,7 +217,7 @@ def _generation_contamination_reason(candidate: str, question: str,
     # A single terminal protocol marker is part of the generation envelope,
     # not prompt contamination. Remove it before scanning for echoed tags.
     terminal_protocol = re.search(
-        r"(?:<END_ANSWER>|<CONTINUE>|<CONTINUATION>)\\s*$", value
+        r"(?:<END_ANSWER>|<CONTINUE>|<CONTINUATION>)\s*$", value
     )
     if terminal_protocol:
         value = value[:terminal_protocol.start()].rstrip()
