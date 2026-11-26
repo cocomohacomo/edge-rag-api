@@ -6,13 +6,17 @@ on:
     paths:
       - ".github/workflows/blackmamba-cpu-e2e.yml"
       - "benchmarks/rag_e2e_benchmark.py"
+      - "benchmarks/rwkv7_prompt_ab.py"
       - "benchmarks/model_prompt_diagnostics.py"
+      - "tests/test_rwkv7_prompt.py"
       - ".github/workflows/rwkv7-model-benchmark.yml"
       - "rag/**"
   pull_request:
     paths:
       - ".github/workflows/blackmamba-cpu-e2e.yml"
       - "benchmarks/rag_e2e_benchmark.py"
+      - "benchmarks/rwkv7_prompt_ab.py"
+      - "tests/test_rwkv7_prompt.py"
       - "rag/**"
   workflow_dispatch:
 
