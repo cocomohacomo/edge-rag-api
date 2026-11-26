@@ -23,7 +23,8 @@ except ImportError:  # direct execution via rag/cli.py
     from evidence_ledger import build_evidence_ledger, render_ledger
 
 try:
-    from .quality_metrics import evaluate_attribute_completeness, validate_attribute_claims\n    from .core import japanese_terms
+    from .quality_metrics import evaluate_attribute_completeness, validate_attribute_claims
+    from .core import japanese_terms
 except ImportError:  # direct execution via rag/cli.py
     from quality_metrics import evaluate_attribute_completeness, validate_attribute_claims\n    from core import japanese_terms
 
