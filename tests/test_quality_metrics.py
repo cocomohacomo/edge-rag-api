@@ -1,5 +1,6 @@
 import unittest
 from rag.quality_metrics import evaluate_attribute_completeness, validate_attribute_claims
+from rag.attribute_validation import build_composer_prompt, validate_composed_answer
 
 
 class AttributeCompletenessTests(unittest.TestCase):
@@ -35,6 +36,21 @@ class AttributeCompletenessTests(unittest.TestCase):
         result = evaluate_attribute_completeness(self.ledger, {"supported": [], "has_conflict": False}, "回答")
         self.assertEqual(result["completeness_rate"], 1.0)
         self.assertEqual(result["complete_count"], 0)
+
+    def test_composer_prompt_requests_template_then_verified_substitution(self):
+        prompt = build_composer_prompt("質問: 担当者と期限は？", self.ledger, self.validation)
+        self.assertIn("回答文テンプレートを内部で設計", prompt)
+        self.assertIn("{owner}", prompt)
+        self.assertIn("{deadline}", prompt)
+        self.assertIn("波括弧のプレースホルダー自体は最終回答に残さない", prompt)
+
+    def test_unfilled_template_placeholder_is_rejected(self):
+        valid, reason = validate_composed_answer(
+            "担当者は{owner}です。期限は12月15日です。",
+            self.ledger, self.validation,
+        )
+        self.assertFalse(valid)
+        self.assertEqual(reason, "unfilled_template_placeholder")
 
 
 if __name__ == "__main__":
