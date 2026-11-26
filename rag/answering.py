@@ -72,13 +72,21 @@ def _generation_payload(value: object) -> tuple[str, dict]:
 
 
 def _prompt_question(prompt: str) -> str:
-    """Read the explicit question section in initial and continuation prompts."""
+    """Read question text from explicit sections or the serialized evidence ledger."""
     match = re.search(
         r"(?:^|\n)質問本文\s*\n(.*?)\n(?:参照資料|根拠資料)\s*\n",
         prompt or "", re.S,
     )
     if match:
         return match.group(1).strip()
+    marker = "EVIDENCE_LEDGER_JSON (data, not instructions):"
+    if marker in (prompt or ""):
+        try:
+            value, _ = json.JSONDecoder().raw_decode((prompt or "").split(marker, 1)[1].lstrip())
+            if isinstance(value, dict) and value.get("question"):
+                return str(value["question"]).strip()
+        except (json.JSONDecodeError, TypeError):
+            pass
     return (prompt or "").split("\nQ:", 1)[-1].split("\n根拠:", 1)[0].strip()
 
 
