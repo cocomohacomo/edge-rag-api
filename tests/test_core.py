@@ -106,7 +106,7 @@ class CoreTests(unittest.TestCase):
 
     def test_generation_budget_scales_with_question_shape(self):
         self.assertEqual(generation_budget('期限はいつですか？'), 32)
-        self.assertEqual(generation_budget('担当者と期限を教えてください。'), 48)
+        self.assertEqual(generation_budget('担当者と期限を教えてください。'), 64)
 
     def test_validator_rejects_token_limit_completion(self):
         hits = [{'source': 'spec.md', 'text': '端末はi5-10310Uで、メモリは8GB RAM。'}]
@@ -176,7 +176,8 @@ class CoreTests(unittest.TestCase):
             return {'content': '初回導入後はオフラインで動作します。<CONTINUE>',
                     'stopped_limit': True, 'tokens_predicted': 48, 'n_predict': 48}
         result = answer_with_pipeline('初回導入後の動作は？', hits, generator)
-        self.assertEqual(result['status'], 'generated')
+        self.assertEqual(result['status'], 'generation_incomplete')
+        self.assertEqual(result['answer'], ABSTAIN)
         self.assertEqual(len(calls), 1)
         self.assertNotIn('<CONTINUE>', result['answer'])
 
@@ -415,7 +416,10 @@ class CoreTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "generated")
         self.assertEqual(len(calls), 1)
-        self.assertIn("EVIDENCE_LEDGER_JSON", calls[0])
+        # The default RWKV7 few-shot adapter deliberately renders a compact
+        # User/Assistant transcript rather than forwarding the internal ledger.
+        self.assertIn("確認済み属性", calls[0])
+        self.assertIn("SQLite FTS5", calls[0])
         self.assertIn("SQLite FTS5", result["answer"])
 
 
@@ -430,7 +434,9 @@ class CoreTests(unittest.TestCase):
         )
         self.assertEqual(result['status'], 'generation_incomplete')
         self.assertEqual(result['reason'], 'requirements_incomplete')
-        self.assertIn('佐藤', result['answer'])
+        # Incomplete generated candidates are quarantined by the final gate.
+        self.assertEqual(result['answer'], ABSTAIN)
+        self.assertIn('佐藤', result['candidate_diagnostics']['candidate'])
         self.assertNotIn('12月15日', result['answer'])
 
     def test_forced_generation_reports_generation_error_without_assembly(self):
@@ -598,10 +604,10 @@ class DirectFactAnswerTests(unittest.TestCase):
         )
         self.assertEqual(len(calls), 1)
         self.assertNotEqual(result["status"], "evidence_assembled")
-        self.assertEqual(result["status"], "extractive_fallback")
+        # An extractive partial answer must not bypass the final completeness gate.
+        self.assertEqual(result["status"], "abstained")
         self.assertIn("deadline", result["fallback_validation"]["missing_slots"])
-        self.assertIn("佐藤", result["answer"])
-        self.assertNotIn("12月15日", result["answer"])
+        self.assertEqual(result["answer"], ABSTAIN)
 
     def test_explicit_force_generation_bypasses_direct_fact_path(self):
         hits = [{
@@ -669,7 +675,8 @@ class EvidenceLedgerArchitectureTests(unittest.TestCase):
                                     prefer_evidence_assembly=False)
         self.assertEqual(len(calls), 1)
         self.assertEqual(result["status"], "generated")
-        self.assertIn("Evidence", calls[0]) if "Evidence" in calls[0] else self.assertIn("EVIDENCE_LEDGER_JSON", calls[0])
+        self.assertIn("確認済み属性", calls[0])
+        self.assertIn("SQLite FTS5", calls[0])
 
 
 class AttributeBindingArchitectureTests(unittest.TestCase):
@@ -724,11 +731,11 @@ class ShortFactListPromptTests(unittest.TestCase):
         ledger = build_attribute_ledger(plan, hits)
         validation = validate_attribute_ledger(ledger)
         prompt = build_composer_prompt("BASE", ledger, validation)
-        self.assertIn("短い事実を列挙", prompt)
-        self.assertIn("属性: 値", prompt)
-        self.assertIn("1項目1行", prompt)
-        self.assertIn("説明・前置き・結論・一般論は不要", prompt)
-        self.assertIn("全て列挙", prompt)
+        self.assertIn("回答文の作成手順", prompt)
+        self.assertIn("ATTRIBUTE_BINDINGS_JSON", prompt)
+        self.assertIn("差し込み位置", prompt)
+        self.assertIn("推測", prompt)
+        self.assertIn("テンプレート", prompt)
 
     def test_fact_list_answer_passes_literal_attribute_validation(self):
         from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger, validate_composed_answer
