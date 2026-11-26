@@ -957,6 +957,46 @@ def answer_with_pipeline(
         rounds[-1]["state"] = "continue"
         state = "continuing"
 
+    if retry and not accumulated and state not in {"failed", "contaminated", "rejected"}:
+        retry_round = {"round": len(rounds) + 1, "retry": True}
+        try:
+            raw = generator(base_prompt + "\\n根拠中の回答可能な事実だけを簡潔に回答してください。")
+            candidate, metadata = _generation_payload(raw)
+            contamination = _generation_contamination_reason(candidate, question)
+            if contamination:
+                retry_round.update({"state": "contaminated", "contamination_reason": contamination})
+                state = "contaminated"
+                last_reason = "prompt_contamination:" + contamination
+            else:
+                candidate, marker = _strip_control_markers(candidate)
+                candidate = _clean_generation_delta(candidate, question)
+                retry_complete = marker == "end" or bool(
+                    re.search(r"[。！？!?）」』】]$", candidate.strip())
+                )
+                retry_gate = _evaluate_final_output(
+                    candidate, question, selected, attribute_ledger, attribute_validation,
+                    completion_confirmed=retry_complete,
+                )
+                retry_round.update({
+                    "state": "completed" if retry_gate["passed"] else "rejected",
+                    "marker": marker,
+                    "completion_signal": marker or ("punctuation" if retry_complete else None),
+                    "truncated": _is_truncated(metadata),
+                    "final_output_gate": retry_gate["checks"],
+                })
+                if retry_gate["passed"]:
+                    accumulated = candidate
+                    state = "completed"
+                    last_reason = "accepted"
+                else:
+                    state = "retry_rejected"
+                    last_reason = "retry_final_output_gate_rejected"
+        except Exception as exc:
+            retry_round.update({"state": "generation_error", "error": type(exc).__name__})
+            state = "failed"
+            last_reason = "retry_generation_error"
+        rounds.append(retry_round)
+
     # Contamination is a hard failure: quarantine the entire generation state.
     # No partial prefix from earlier rounds is exposed or passed to downstream logic.
     if state == "contaminated":
@@ -964,20 +1004,6 @@ def answer_with_pipeline(
                 "reason": last_reason, "retrieval": decision,
                 "generation_rounds": rounds, "missing_slots": [],
                 "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "progress": build_progress_summary(plan, validated=False)}
-
-    if retry and not accumulated and state not in {"failed", "contaminated", "rejected"}:
-        try:
-            raw = generator(base_prompt + "\n根拠中の回答可能な事実だけを簡潔に回答してください。")
-            candidate, _ = _generation_payload(raw)
-            contamination = _generation_contamination_reason(candidate, question)
-            if not contamination:
-                candidate, _ = _strip_control_markers(candidate)
-                candidate = _clean_generation_delta(candidate, question)
-                valid_retry, _ = validate_answer(candidate, question, selected)
-                if valid_retry:
-                    accumulated = candidate
-        except Exception:
-            pass
     final_gate = _evaluate_final_output(
         accumulated, question, selected, attribute_ledger, attribute_validation,
         completion_confirmed=(state == "completed"),
@@ -989,11 +1015,16 @@ def answer_with_pipeline(
     final_completeness = final_gate["completeness"]
     final_claim_validation = final_gate["claims"]
     attribute_reason = final_gate["attribute_reason"]
-    if final_gate["passed"]:
+    if final_gate["passed"] and state == "completed":
         return {"answer": accumulated.strip(), "status": "generated",
                 "reason": "semantic_completion", "retrieval": decision,
                 "generation_rounds": rounds, "missing_slots": [],
-                "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "attribute_completeness": final_completeness, "attribute_claim_validation": final_claim_validation, "progress": build_progress_summary(plan, validated=True)}
+                "answer_plan": plan, "attribute_ledger": attribute_ledger,
+                "attribute_validation": attribute_validation,
+                "attribute_completeness": final_completeness,
+                "attribute_claim_validation": final_claim_validation,
+                "final_output_gate": {"passed": True, "checks": final_gate["checks"]},
+                "progress": build_progress_summary(plan, validated=True)}
     # Generation-required callers must be able to distinguish an incomplete
     # generation from a deterministic answer. Never hide a failed LLM attempt
     # by silently replacing it with evidence assembly.
