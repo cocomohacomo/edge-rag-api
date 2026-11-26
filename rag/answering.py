@@ -54,15 +54,16 @@ def _overlap(question: str, text: str) -> float:
     return len(q & d) / len(q)
 
 
-def generation_budget(question: str, base_tokens: int = 48) -> int:
-    """Keep the existing 48-token ceiling; allocate fewer tokens to simple fact lookups."""
+def generation_budget(question: str, base_tokens: int = 64) -> int:
+    """Allocate a bounded budget by query complexity (simple 32, complex up to 64)."""
     q = question.strip()
     multi_attribute = bool(re.search(
         r"(担当者.*期限|期限.*担当者|方式.*要件|要件.*方式|端末.*メモリ|"
-        r"メモリ.*端末|実行方式.*CPU|CPU.*実行方式|\sと\s|及び|ならびに|"
-        r"それぞれ|複数|一覧|比較)", q
+        r"メモリ.*端末|実行方式.*CPU|CPU.*実行方式|"
+        r"(?:責任者|担当者|期限|端末|メモリ|環境).{0,12}と.{0,12}(?:責任者|担当者|期限|端末|メモリ|環境)|"
+        r"、|及び|ならびに|それぞれ|複数|一覧|比較)", q
     ))
-    return min(base_tokens, 48) if multi_attribute or len(q) >= 28 else min(base_tokens, 32)
+    return min(base_tokens, 64) if multi_attribute or len(q) >= 28 else min(base_tokens, 32)
 
 
 def _generation_payload(value: object) -> tuple[str, dict]:
@@ -984,7 +985,7 @@ def answer_with_pipeline(
             "answer_plan": plan, "progress": build_progress_summary(plan, validated=valid and not missing)}
 
 
-def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: int = 48,
+def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: int = 64,
                           timeout: int = 300) -> Callable[[str], dict]:
     """Create an offline-only adapter for a locally running llama.cpp server."""
     from urllib.parse import urlparse

@@ -6,6 +6,7 @@ from rag.answering import (
     _prompt_question,
     _is_truncated,
     validate_answer,
+    generation_budget,
 )
 
 
@@ -73,6 +74,12 @@ class RWKV7PromptTests(unittest.TestCase):
             )[1],
             "token_limit",
         )
+
+    def test_adaptive_generation_budget(self):
+        self.assertEqual(generation_budget("担当者は誰ですか。"), 32)
+        self.assertEqual(generation_budget("移行作業の責任者、期限、対象環境、メモリを教えてください。"), 64)
+        self.assertEqual(generation_budget("担当者は誰ですか。", base_tokens=48), 32)
+        self.assertEqual(generation_budget("責任者と期限を教えてください。", base_tokens=48), 48)
 
     def test_unknown_style_is_rejected(self):
         with self.assertRaises(ValueError):
