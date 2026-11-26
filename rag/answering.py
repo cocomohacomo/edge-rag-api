@@ -957,7 +957,7 @@ def answer_with_pipeline(
         elif state == "failed":
             forced_status = "generation_error"
             forced_reason = last_reason
-            visible_answer = accumulated.strip() if draft_valid and attribute_ok else ABSTAIN
+            visible_answer = accumulated.strip() if draft_valid and attribute_ok and final_claim_validation["valid"] and (final_completeness["completeness_rate"] == 1.0 if final_completeness["supported_count"] else True) else ABSTAIN
         else:
             forced_status = "generation_incomplete"
             forced_reason = (
