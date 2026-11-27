@@ -182,6 +182,22 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result['generation_rounds'][0]['state'], 'completion_unconfirmed')
         self.assertNotIn('<CONTINUE>', result['answer'])
 
+    def test_truncated_complete_sentence_without_marker_does_not_continue(self):
+        hits = [{'score': .4, 'source': 'offline.md',
+                 'text': '初回導入後はオフラインで動作する。'}]
+        calls = []
+        def generator(_prompt):
+            calls.append(1)
+            return {'content': '初回導入後はオフラインで動作します。',
+                    'stopped_limit': True, 'tokens_predicted': 48, 'n_predict': 48}
+        result = answer_with_pipeline('初回導入後の動作は？', hits, generator)
+        self.assertEqual(result['status'], 'generation_incomplete')
+        self.assertEqual(result['answer'], ABSTAIN)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(result['generation_rounds'][0]['truncated'])
+        self.assertEqual(result['generation_rounds'][0]['state'], 'completion_unconfirmed')
+        self.assertFalse(result['final_output_gate']['checks']['completion_confirmed'])
+
     def test_unsupported_partial_answer_does_not_trigger_continuation(self):
         hits = [{'score': .4, 'source': 'audio.md',
                  'text': 'CPUのみでローカル実行する方式を採用する。'}]
