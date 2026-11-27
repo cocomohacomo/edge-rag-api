@@ -4,11 +4,6 @@ from __future__ import annotations
 import re
 
 
-_CLAIM_TOKEN_RE = re.compile(
-    r"[一-龥ぁ-んァ-ヶー]{2,}|[A-Za-z][A-Za-z0-9_.:/-]*|"
-    r"\d+(?:[.,]\d+)?(?:万円|億円|千円|%|GB|MB|GiB|MiB|日|月|年|時|分)?",
-    re.I,
-)
 _NUMERIC_RE = re.compile(
     r"(?<![A-Za-z])\d+(?:[.,]\d+)?(?:万円|億円|千円|%|GB|MB|GiB|MiB|日|月|年|時|分)?",
     re.I,
@@ -99,7 +94,7 @@ def validate_answer_claims(answer: str, ledger: dict, validation: dict,
         if not tokens:
             continue
         claim_numbers = list(dict.fromkeys(_NUMERIC_RE.findall(claim)))
-        claim_urls = re.findall(r"""https?://[^\\s<>"'、。]+""", claim)
+        claim_urls = re.findall(r"""https?://[^\s<>"'、。]+""", claim)
         claim_paths = re.findall(
             r"(?<![A-Za-z0-9./:])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+", claim
         )
