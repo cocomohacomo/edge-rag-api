@@ -838,3 +838,32 @@ class AnswerCompletenessRefactorTests(unittest.TestCase):
         self.assertFalse(checked["valid"])
         self.assertTrue(checked["unsupported_claims"])
         self.assertIn("500万円", checked["unsupported_identifiers"])
+
+
+    def test_independent_checker_requires_one_evidence_unit_to_support_the_claim(self):
+        from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger
+        from rag.quality_metrics import validate_answer_claims
+        hits = [
+            {"source": "device.md", "text": "対象端末はi5-10310Uです。"},
+            {"source": "memory.md", "text": "メモリ要件は8GB RAMです。"},
+        ]
+        ledger = build_attribute_ledger(build_answer_plan("端末とメモリは？", hits), hits)
+        validation = validate_attribute_ledger(ledger)
+        answer = "端末はi5-10310Uで、メモリは8GB RAMです。"
+        checked = validate_answer_claims(answer, ledger, validation)
+        self.assertFalse(checked["valid"])
+        self.assertTrue(checked["unsupported_claims"])
+        self.assertEqual(checked["claims"][0]["evidence_ids"], [])
+
+    def test_independent_checker_revalidates_attribute_source_offsets(self):
+        from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger
+        from rag.quality_metrics import validate_answer_claims
+        hits = [{"source": "meeting.md", "text": "担当者は佐藤です。"}]
+        ledger = build_attribute_ledger(build_answer_plan("担当者は？", hits), hits)
+        validation = validate_attribute_ledger(ledger)
+        binding = ledger["attributes"][0]["bindings"][0]
+        binding["start"] += 1
+        checked = validate_answer_claims("担当者は佐藤です。", ledger, validation)
+        self.assertFalse(checked["valid"])
+        self.assertFalse(checked["attribute_bindings"]["owner"]["supported"])
+

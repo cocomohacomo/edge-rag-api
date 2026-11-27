@@ -98,23 +98,26 @@ def validate_answer_claims(answer: str, ledger: dict, validation: dict,
         tokens = _claim_tokens(claim)
         if not tokens:
             continue
-        best_id, best_ratio = None, 0.0
-        for item in evidence:
-            passage = str(item.get("text", ""))
-            matched = sum(1 for token in tokens if token.casefold() in passage.casefold())
-            ratio = matched / len(tokens)
-            if ratio > best_ratio:
-                best_id, best_ratio = str(item["evidence_id"]), ratio
-
         claim_numbers = list(dict.fromkeys(_NUMERIC_RE.findall(claim)))
-        claim_urls = re.findall(r"""https?://[^\s<>"'、。]+""", claim)
+        claim_urls = re.findall(r"""https?://[^\\s<>"'、。]+""", claim)
         claim_paths = re.findall(
             r"(?<![A-Za-z0-9./:])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+", claim
         )
-        unsupported_identifiers = []
-        for value in claim_numbers + claim_urls + claim_paths:
-            if not any(value.casefold() in str(item.get("text", "")).casefold() for item in evidence):
-                unsupported_identifiers.append(value)
+        identifiers = list(dict.fromkeys(claim_numbers + claim_urls + claim_paths))
+        best_id, best_ratio, best_missing = None, 0.0, identifiers
+        for item in evidence:
+            passage = str(item.get("text", ""))
+            matched = sum(1 for token in tokens if token in _claim_tokens(passage))
+            ratio = matched / len(tokens)
+            missing_here = [
+                value for value in identifiers
+                if value.casefold() not in passage.casefold()
+            ]
+            if (ratio, -len(missing_here)) > (best_ratio, -len(best_missing)):
+                best_id = str(item["evidence_id"])
+                best_ratio = ratio
+                best_missing = missing_here
+        unsupported_identifiers = best_missing if identifiers else []
         supported = bool(best_id and best_ratio >= min_support_ratio) and not unsupported_identifiers
         entry = {
             "claim": claim,
@@ -134,12 +137,25 @@ def validate_answer_claims(answer: str, ledger: dict, validation: dict,
         values = [str(value) for value in item.get("values", []) if value is not None]
         bindings = item.get("bindings", [])
         present = bool(values and values[0] in text)
-        source_ids = sorted({
-            str(binding.get("evidence_id")) for binding in bindings
-            if values
-            and binding.get("evidence_id") in evidence_by_id
-            and binding.get("quote") == values[0]
-        })
+        source_ids = []
+        if values:
+            for binding in bindings:
+                evidence_id = str(binding.get("evidence_id"))
+                evidence_item = evidence_by_id.get(evidence_id)
+                if evidence_item is None or binding.get("quote") != values[0]:
+                    continue
+                try:
+                    start, end = int(binding.get("start", -1)), int(binding.get("end", -1))
+                except (TypeError, ValueError):
+                    continue
+                source_text = str(evidence_item.get("text", ""))
+                if (
+                    evidence_item.get("source") == binding.get("source")
+                    and 0 <= start < end <= len(source_text)
+                    and source_text[start:end] == values[0]
+                ):
+                    source_ids.append(evidence_id)
+        source_ids = sorted(set(source_ids))
         attribute_bindings[str(name)] = {
             "present": present,
             "evidence_ids": source_ids if present else [],
