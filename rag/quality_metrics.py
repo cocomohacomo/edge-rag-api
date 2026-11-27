@@ -10,7 +10,7 @@ _CLAIM_TOKEN_RE = re.compile(
     re.I,
 )
 _NUMERIC_RE = re.compile(
-    r"(?<![A-Za-z])\d+(?:[.,]\d+)?(?:%|GB|MB|GiB|MiB|日|月|年|時|分)?",
+    r"(?<![A-Za-z])\d+(?:[.,]\d+)?(?:万円|億円|千円|%|GB|MB|GiB|MiB|日|月|年|時|分)?",
     re.I,
 )
 
