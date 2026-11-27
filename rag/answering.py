@@ -914,7 +914,7 @@ def answer_with_pipeline(
         # remains to fill. Retrying the same complete-looking text cannot
         # establish completion and may misclassify the repeated prefix as
         # prompt contamination on the next round.
-        if truncated and not missing:
+        if truncated and not missing and text_complete:
             rounds[-1]["state"] = "completion_unconfirmed"
             state = "exhausted"
             break
