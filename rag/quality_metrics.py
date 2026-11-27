@@ -6,7 +6,7 @@ import re
 
 _CLAIM_TOKEN_RE = re.compile(
     r"[一-龥ぁ-んァ-ヶー]{2,}|[A-Za-z][A-Za-z0-9_.:/-]*|"
-    r"\d+(?:[.,]\d+)?(?:%|GB|MB|GiB|MiB|日|月|年|時|分)?",
+    r"\d+(?:[.,]\d+)?(?:万円|億円|千円|%|GB|MB|GiB|MiB|日|月|年|時|分)?",
     re.I,
 )
 _NUMERIC_RE = re.compile(
@@ -130,8 +130,9 @@ def validate_answer_claims(answer: str, ledger: dict, validation: dict,
         present = bool(values and values[0] in text)
         source_ids = sorted({
             str(binding.get("evidence_id")) for binding in bindings
-            if binding.get("evidence_id") in evidence_by_id
-            and binding.get("quote") == values[0] if values
+            if values
+            and binding.get("evidence_id") in evidence_by_id
+            and binding.get("quote") == values[0]
         })
         attribute_bindings[str(name)] = {
             "present": present,
