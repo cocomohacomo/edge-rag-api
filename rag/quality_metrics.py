@@ -31,7 +31,6 @@ def missing_supported_attributes(ledger: dict, validation: dict, answer: str) ->
 def evaluate_attribute_completeness(ledger: dict, validation: dict, answer: str) -> dict:
     attributes = list(ledger.get("attributes", []))
     supported = list(dict.fromkeys(validation.get("supported", [])))
-    by_name = {str(item.get("attribute", "")): item for item in attributes}
     missing = missing_supported_attributes(ledger, validation, answer)
     complete = len(supported) - len(missing)
     unsupported = [
@@ -65,6 +64,7 @@ def validate_attribute_claims(answer: str, ledger: dict, validation: dict) -> di
         "missing_attributes": missing,
         "unsupported_values": unsupported_values,
         "conflict": conflict,
+        "limitation": "Only explicit evidence-bound values are checked; semantic entailment is handled by the independent claim checker.",
     }
 
 
@@ -99,12 +99,6 @@ def validate_answer_claims(answer: str, ledger: dict, validation: dict,
         claim_paths = re.findall(
             r"(?<![A-Za-z0-9./:])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+", claim
         )
-        exact_support_ids = []
-        for item in evidence:
-            passage = str(item.get("text", ""))
-            if all(value.casefold() in passage.casefold() for value in claim_numbers + claim_urls + claim_paths):
-                if claim_numbers or claim_urls or claim_paths:
-                    exact_support_ids.append(str(item["evidence_id"]))
         unsupported_identifiers = []
         for value in claim_numbers + claim_urls + claim_paths:
             if not any(value.casefold() in str(item.get("text", "")).casefold() for item in evidence):

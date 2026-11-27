@@ -818,6 +818,8 @@ def answer_with_pipeline(
                 "attribute_completeness": assembled_gate["completeness"],
                 "attribute_claim_validation": assembled_gate["claims"],
                 "final_output_gate": {"passed": True, "checks": assembled_gate["checks"]},
+                "independent_claim_validation": assembled_gate["independent_claim_validation"],
+                "independent_claim_validation": assembled_gate["independent_claim_validation"],
                 "progress": build_progress_summary(plan, validated=True),
             }
 
@@ -929,6 +931,7 @@ def answer_with_pipeline(
         completeness = output_gate["completeness"]
         claim_validation = output_gate["claims"]
         rounds[-1]["attribute_validation"] = output_gate["attribute_reason"]
+        rounds[-1]["independent_claim_validation"] = output_gate["independent_claim_validation"]
         if output_gate["passed"]:
             rounds[-1]["state"] = "completed"
             state = "completed"
@@ -1127,6 +1130,7 @@ def answer_with_pipeline(
                 "attribute_completeness": final_completeness,
                 "attribute_claim_validation": final_claim_validation,
                 "final_output_gate": {"passed": final_gate_passed, "checks": final_gate_checks},
+                "independent_claim_validation": final_gate["independent_claim_validation"],
                 "candidate_diagnostics": {
                     "candidate": accumulated.strip(),
                     "quarantined": bool(accumulated.strip()) and not final_gate_passed,
@@ -1160,6 +1164,7 @@ def answer_with_pipeline(
                 "retrieval": decision, "generation_rounds": rounds,
                 "missing_slots": fallback_gate["missing_slots"] + fallback_gate["missing_relations"],
                 "final_output_gate": {"passed": False, "checks": fallback_gate["checks"]},
+                "independent_claim_validation": fallback_gate["independent_claim_validation"],
                 "candidate_diagnostics": {"candidate": fallback, "quarantined": bool(fallback)},
                 "answer_plan": plan, "progress": build_progress_summary(plan, validated=False)}
     return {"answer": fallback, "status": "extractive_fallback",
@@ -1169,6 +1174,7 @@ def answer_with_pipeline(
             "attribute_completeness": fallback_gate["completeness"],
             "attribute_claim_validation": fallback_gate["claims"],
             "final_output_gate": {"passed": True, "checks": fallback_gate["checks"]},
+            "independent_claim_validation": fallback_gate["independent_claim_validation"],
             "numeric_diagnostics": _numeric_claim_diagnostics(accumulated, selected),
             "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
 

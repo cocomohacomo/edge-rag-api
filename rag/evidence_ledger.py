@@ -13,8 +13,8 @@ def build_evidence_ledger(question: str, hits: Iterable[dict], plan: dict | None
     entries = []
     for hit_index, hit in enumerate(hits, 1):
         source = str(hit.get("source", "unknown"))
-        text = str(hit.get("text", "")).strip()
-        if not text:
+        text = str(hit.get("text", ""))
+        if not text.strip():
             continue
         # Keep retrieval-order identity stable with Attribute Ledger E{index}.
         # Duplicate passages are retained because different retrieved chunks must
