@@ -106,7 +106,7 @@ class CoreTests(unittest.TestCase):
 
     def test_generation_budget_scales_with_question_shape(self):
         self.assertEqual(generation_budget('期限はいつですか？'), 32)
-        self.assertEqual(generation_budget('担当者と期限を教えてください。'), 48)
+        self.assertEqual(generation_budget('担当者と期限を教えてください。'), 64)
 
     def test_validator_rejects_token_limit_completion(self):
         hits = [{'source': 'spec.md', 'text': '端末はi5-10310Uで、メモリは8GB RAM。'}]
@@ -176,9 +176,27 @@ class CoreTests(unittest.TestCase):
             return {'content': '初回導入後はオフラインで動作します。<CONTINUE>',
                     'stopped_limit': True, 'tokens_predicted': 48, 'n_predict': 48}
         result = answer_with_pipeline('初回導入後の動作は？', hits, generator)
-        self.assertEqual(result['status'], 'generated')
+        self.assertEqual(result['status'], 'generation_incomplete')
+        self.assertEqual(result['answer'], ABSTAIN)
         self.assertEqual(len(calls), 1)
+        self.assertEqual(result['generation_rounds'][0]['state'], 'completion_unconfirmed')
         self.assertNotIn('<CONTINUE>', result['answer'])
+
+    def test_truncated_complete_sentence_without_marker_does_not_continue(self):
+        hits = [{'score': .4, 'source': 'offline.md',
+                 'text': '初回導入後はオフラインで動作する。'}]
+        calls = []
+        def generator(_prompt):
+            calls.append(1)
+            return {'content': '初回導入後はオフラインで動作します。',
+                    'stopped_limit': True, 'tokens_predicted': 48, 'n_predict': 48}
+        result = answer_with_pipeline('初回導入後の動作は？', hits, generator)
+        self.assertEqual(result['status'], 'generation_incomplete')
+        self.assertEqual(result['answer'], ABSTAIN)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(result['generation_rounds'][0]['truncated'])
+        self.assertEqual(result['generation_rounds'][0]['state'], 'completion_unconfirmed')
+        self.assertFalse(result['final_output_gate']['checks']['completion_confirmed'])
 
     def test_unsupported_partial_answer_does_not_trigger_continuation(self):
         hits = [{'score': .4, 'source': 'audio.md',
@@ -415,7 +433,10 @@ class CoreTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "generated")
         self.assertEqual(len(calls), 1)
-        self.assertIn("EVIDENCE_LEDGER_JSON", calls[0])
+        # The default RWKV7 few-shot adapter deliberately renders a compact
+        # User/Assistant transcript rather than forwarding the internal ledger.
+        self.assertIn("確認済み属性", calls[0])
+        self.assertIn("SQLite FTS5", calls[0])
         self.assertIn("SQLite FTS5", result["answer"])
 
 
@@ -430,7 +451,9 @@ class CoreTests(unittest.TestCase):
         )
         self.assertEqual(result['status'], 'generation_incomplete')
         self.assertEqual(result['reason'], 'requirements_incomplete')
-        self.assertIn('佐藤', result['answer'])
+        # Incomplete generated candidates are quarantined by the final gate.
+        self.assertEqual(result['answer'], ABSTAIN)
+        self.assertIn('佐藤', result['candidate_diagnostics']['candidate'])
         self.assertNotIn('12月15日', result['answer'])
 
     def test_forced_generation_reports_generation_error_without_assembly(self):
@@ -598,10 +621,10 @@ class DirectFactAnswerTests(unittest.TestCase):
         )
         self.assertEqual(len(calls), 1)
         self.assertNotEqual(result["status"], "evidence_assembled")
-        self.assertEqual(result["status"], "extractive_fallback")
-        self.assertIn("deadline", result["fallback_validation"]["missing_slots"])
-        self.assertIn("佐藤", result["answer"])
-        self.assertNotIn("12月15日", result["answer"])
+        # An extractive partial answer must not bypass the final completeness gate.
+        self.assertEqual(result["status"], "abstained")
+        self.assertIn("deadline", result["missing_slots"])
+        self.assertEqual(result["answer"], ABSTAIN)
 
     def test_explicit_force_generation_bypasses_direct_fact_path(self):
         hits = [{
@@ -669,7 +692,8 @@ class EvidenceLedgerArchitectureTests(unittest.TestCase):
                                     prefer_evidence_assembly=False)
         self.assertEqual(len(calls), 1)
         self.assertEqual(result["status"], "generated")
-        self.assertIn("Evidence", calls[0]) if "Evidence" in calls[0] else self.assertIn("EVIDENCE_LEDGER_JSON", calls[0])
+        self.assertIn("確認済み属性", calls[0])
+        self.assertIn("SQLite FTS5", calls[0])
 
 
 class AttributeBindingArchitectureTests(unittest.TestCase):
@@ -724,11 +748,11 @@ class ShortFactListPromptTests(unittest.TestCase):
         ledger = build_attribute_ledger(plan, hits)
         validation = validate_attribute_ledger(ledger)
         prompt = build_composer_prompt("BASE", ledger, validation)
-        self.assertIn("短い事実を列挙", prompt)
-        self.assertIn("属性: 値", prompt)
-        self.assertIn("1項目1行", prompt)
-        self.assertIn("説明・前置き・結論・一般論は不要", prompt)
-        self.assertIn("全て列挙", prompt)
+        self.assertIn("回答文の作成手順", prompt)
+        self.assertIn("ATTRIBUTE_BINDINGS_JSON", prompt)
+        self.assertIn("差し込み位置", prompt)
+        self.assertIn("推測", prompt)
+        self.assertIn("テンプレート", prompt)
 
     def test_fact_list_answer_passes_literal_attribute_validation(self):
         from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger, validate_composed_answer
@@ -739,3 +763,107 @@ class ShortFactListPromptTests(unittest.TestCase):
         answer = "端末: i5-10310U\nメモリ: 8GB RAM。"
         ok, reason = validate_composed_answer(answer, ledger, validation)
         self.assertTrue(ok, reason)
+
+
+
+class AnswerCompletenessRefactorTests(unittest.TestCase):
+    def test_attribute_bindings_use_exact_retrieval_unit_not_same_source_name(self):
+        from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger
+        hits = [
+            {"source": "same.md", "text": "担当者は佐藤です。"},
+            {"source": "same.md", "text": "期限は12月15日です。"},
+        ]
+        plan = build_answer_plan("担当者と期限は？", hits)
+        ledger = build_attribute_ledger(plan, hits)
+        owner = next(item for item in ledger["attributes"] if item["attribute"] == "owner")
+        deadline = next(item for item in ledger["attributes"] if item["attribute"] == "deadline")
+        self.assertEqual({item["evidence_id"] for item in owner["bindings"]}, {"E1"})
+        self.assertEqual({item["evidence_id"] for item in deadline["bindings"]}, {"E2"})
+        self.assertEqual(validate_attribute_ledger(ledger)["supported"], ["owner", "deadline"])
+
+    def test_attribute_binding_rejects_forged_span_even_if_quote_equals_value(self):
+        from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger
+        hits = [{"source": "minutes.md", "text": "担当者は佐藤です。"}]
+        ledger = build_attribute_ledger(build_answer_plan("担当者は？", hits), hits)
+        binding = ledger["attributes"][0]["bindings"][0]
+        binding["start"] = binding["start"] + 1
+        checked = validate_attribute_ledger(ledger)
+        self.assertEqual(checked["insufficient"], ["owner"])
+
+    def test_retry_prompt_targets_only_one_missing_supported_attribute(self):
+        from rag.attribute_validation import (
+            build_attribute_ledger, validate_attribute_ledger, build_attribute_retry_prompt,
+        )
+        hits = [{"source": "minutes.md", "text": "担当者は佐藤です。提出期限は12月15日です。"}]
+        ledger = build_attribute_ledger(build_answer_plan("担当者と提出期限は？", hits), hits)
+        validation = validate_attribute_ledger(ledger)
+        prompt = build_attribute_retry_prompt(
+            "担当者と提出期限は？", "担当者は佐藤です。", ledger, validation, ["deadline"]
+        )
+        self.assertIn('"attribute":"deadline"', prompt)
+        self.assertNotIn('"attribute":"owner"', prompt)
+        self.assertIn('"evidence_id":"E1"', prompt)
+        self.assertIn("担当者は佐藤です。", prompt)
+
+    def test_only_missing_attribute_is_retried_and_result_is_rechecked(self):
+        hits = [{"score": .9, "source": "minutes.md",
+                 "text": "会議の担当者は佐藤です。提出期限は12月15日です。"}]
+        prompts = []
+        def generator(prompt):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return {"content": "担当者は佐藤です。<CONTINUE>",
+                        "stop": True, "tokens_predicted": 12, "n_predict": 48}
+            return {"content": "提出期限は12月15日です。<END_ANSWER>",
+                    "stop": True, "tokens_predicted": 12, "n_predict": 24}
+        result = answer_with_pipeline(
+            "会議の担当者と提出期限は？", hits, generator,
+            continuation=True, max_continuations=1, force_generation=True,
+        )
+        self.assertEqual(result["status"], "generated")
+        self.assertIn('"attribute":"deadline"', prompts[1])
+        self.assertNotIn('"attribute":"owner"', prompts[1])
+        self.assertEqual(result["attribute_completeness"]["completeness_rate"], 1.0)
+        self.assertTrue(result["final_output_gate"]["checks"]["claims_independently_supported"])
+        self.assertEqual(result["generation_rounds"][0]["retry_target_attributes"], ["deadline"])
+
+    def test_independent_checker_rejects_unsupported_claim_even_when_other_sentence_is_grounded(self):
+        from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger
+        from rag.quality_metrics import validate_answer_claims
+        hits = [{"source": "spec.md", "text": "対象端末はi5-10310U。メモリ要件は8GB RAM。"}]
+        ledger = build_attribute_ledger(build_answer_plan("端末とメモリは？", hits), hits)
+        validation = validate_attribute_ledger(ledger)
+        answer = "端末はi5-10310Uです。予算は500万円です。"
+        checked = validate_answer_claims(answer, ledger, validation)
+        self.assertFalse(checked["valid"])
+        self.assertTrue(checked["unsupported_claims"])
+        self.assertIn("500万円", checked["unsupported_identifiers"])
+
+
+    def test_independent_checker_requires_one_evidence_unit_to_support_the_claim(self):
+        from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger
+        from rag.quality_metrics import validate_answer_claims
+        hits = [
+            {"source": "device.md", "text": "対象端末はi5-10310Uです。"},
+            {"source": "memory.md", "text": "メモリ要件は8GB RAMです。"},
+        ]
+        ledger = build_attribute_ledger(build_answer_plan("端末とメモリは？", hits), hits)
+        validation = validate_attribute_ledger(ledger)
+        answer = "端末はi5-10310Uで、メモリは8GB RAMです。"
+        checked = validate_answer_claims(answer, ledger, validation)
+        self.assertFalse(checked["valid"])
+        self.assertTrue(checked["unsupported_claims"])
+        self.assertEqual(checked["claims"][0]["evidence_ids"], [])
+
+    def test_independent_checker_revalidates_attribute_source_offsets(self):
+        from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger
+        from rag.quality_metrics import validate_answer_claims
+        hits = [{"source": "meeting.md", "text": "担当者は佐藤です。"}]
+        ledger = build_attribute_ledger(build_answer_plan("担当者は？", hits), hits)
+        validation = validate_attribute_ledger(ledger)
+        binding = ledger["attributes"][0]["bindings"][0]
+        binding["start"] += 1
+        checked = validate_answer_claims("担当者は佐藤です。", ledger, validation)
+        self.assertFalse(checked["valid"])
+        self.assertFalse(checked["attribute_bindings"]["owner"]["supported"])
+

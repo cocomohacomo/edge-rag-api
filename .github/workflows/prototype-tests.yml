@@ -2,9 +2,9 @@ name: Offline RAG Prototype Tests
 
 on:
   push:
-    branches: [feature/standalone-windows-rag]
+    branches: [feature/standalone-windows-rag, feature/rag-quality-gates-v2]
   pull_request:
-    branches: [main]
+    branches: [main, feature/rwkv7-adaptive-generation-budget]
 
 jobs:
   tests:

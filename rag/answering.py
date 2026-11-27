@@ -7,12 +7,12 @@ from typing import Callable, Iterable
 try:
     from .attribute_validation import (
         build_attribute_ledger, validate_attribute_ledger,
-        build_composer_prompt, validate_composed_answer,
+        build_composer_prompt, build_attribute_retry_prompt, validate_composed_answer,
     )
 except ImportError:  # direct execution via rag/cli.py
     from attribute_validation import (
         build_attribute_ledger, validate_attribute_ledger,
-        build_composer_prompt, validate_composed_answer,
+        build_composer_prompt, build_attribute_retry_prompt, validate_composed_answer,
     )
 import json
 import urllib.request
@@ -23,8 +23,12 @@ except ImportError:  # direct execution via rag/cli.py
     from evidence_ledger import build_evidence_ledger, render_ledger
 
 try:
+    from .quality_metrics import (evaluate_attribute_completeness, validate_attribute_claims,
+                                  missing_supported_attributes, validate_answer_claims)
     from .core import japanese_terms
 except ImportError:  # direct execution via rag/cli.py
+    from quality_metrics import (evaluate_attribute_completeness, validate_attribute_claims,
+                                 missing_supported_attributes, validate_answer_claims)
     from core import japanese_terms
 
 
@@ -187,13 +191,14 @@ CONTINUE_MARKER = "<CONTINUE>"
 
 
 def _strip_control_markers(text: str) -> tuple[str, str | None]:
-    """Compatibility parser for one terminal protocol marker."""
-    legacy_continue = "<CONTINUATION>"
-    state = ("continue" if CONTINUE_MARKER in text or legacy_continue in text
-             else ("end" if END_MARKER in text else None))
-    cleaned = (text.replace(END_MARKER, "").replace(CONTINUE_MARKER, "")
-               .replace(legacy_continue, "").strip())
-    return cleaned, state
+    """Remove exactly one terminal protocol marker; preserve embedded tags for rejection."""
+    value = (text or "").rstrip()
+    match = re.search(r"(?:<END_ANSWER>|<CONTINUE>|<CONTINUATION>)\s*$", value)
+    if not match:
+        return value.strip(), None
+    marker = match.group(0)
+    state = "continue" if marker in {CONTINUE_MARKER, "<CONTINUATION>"} else "end"
+    return value[:match.start()].strip(), state
 
 
 _PROMPT_TAG_RE = re.compile(r"</?\s*[A-Z][A-Z0-9_ -]*\s*>", re.I)
@@ -212,6 +217,13 @@ def _generation_contamination_reason(candidate: str, question: str,
     value = (candidate or "").strip()
     if not value:
         return None
+    # A single terminal protocol marker is part of the generation envelope,
+    # not prompt contamination. Remove it before scanning for echoed tags.
+    terminal_protocol = re.search(
+        r"(?:<END_ANSWER>|<CONTINUE>|<CONTINUATION>)\s*$", value
+    )
+    if terminal_protocol:
+        value = value[:terminal_protocol.start()].rstrip()
     tags = list(_PROMPT_TAG_RE.finditer(value))
     if tags:
         terminal = _ALLOWED_TERMINAL_MARKER_RE.search(value)
@@ -350,7 +362,7 @@ def build_answer_plan(question: str, hits: Iterable[dict]) -> dict:
     mapping = {}
     for slot in requirements:
         candidates = []
-        for hit in sources:
+        for hit_index, hit in enumerate(sources, 1):
             text = str(hit.get("text", ""))
             if slot == "url":
                 matched = re.findall(r"""https?://[^\s<>"'、。]+""", text)
@@ -360,6 +372,7 @@ def build_answer_plan(question: str, hits: Iterable[dict]) -> dict:
                 matched = _slot_values(slot, text)
             if matched:
                 candidates.append({
+                    "evidence_id": f"E{hit_index}",
                     "source": str(hit.get("source", "unknown")),
                     "values": list(dict.fromkeys(matched))[:4],
                     "evidence": text[:360],
@@ -375,7 +388,7 @@ def build_answer_plan(question: str, hits: Iterable[dict]) -> dict:
     for index, hit in enumerate(sources):
         text = str(hit.get("text", ""))
         covered = sum(1 for slot in requirements if any(
-            item["source"] == str(hit.get("source", "unknown"))
+            item.get("evidence_id") == f"E{index + 1}"
             for item in mapping.get(slot, [])
         ))
         lexical = len(q_terms & set(japanese_terms(text))) / max(1, len(q_terms))
@@ -695,6 +708,58 @@ def extractive_fallback(question: str, hits: Iterable[dict], max_sentences: int 
     return "\n".join(selected) if selected else ABSTAIN
 
 
+def _evaluate_final_output(
+    candidate: str,
+    question: str,
+    selected: list[dict],
+    attribute_ledger: dict,
+    attribute_validation: dict,
+    *,
+    completion_confirmed: bool,
+) -> dict:
+    """Apply the same fail-closed contract to generated and deterministic answers."""
+    text = str(candidate or "").strip()
+    grounded, grounding_reason = validate_answer(text, question, selected)
+    attributes_valid, attribute_reason = validate_composed_answer(
+        text, attribute_ledger, attribute_validation
+    )
+    completeness = evaluate_attribute_completeness(
+        attribute_ledger, attribute_validation, text
+    )
+    claims = validate_attribute_claims(text, attribute_ledger, attribute_validation)
+    independent = validate_answer_claims(text, attribute_ledger, attribute_validation)
+    missing_slots = list(dict.fromkeys(
+        missing_supported_attributes(attribute_ledger, attribute_validation, text)
+        + _missing_slots(question, text, selected)
+    ))
+    missing_relations = _missing_relations(question, text, selected)
+    checks = {
+        "non_empty": bool(text) and text != ABSTAIN,
+        "answer_grounded": grounded,
+        "attributes_valid": attributes_valid,
+        "claims_valid": claims["valid"],
+        "claims_independently_supported": independent["valid"],
+        "attributes_complete": (
+            completeness["completeness_rate"] == 1.0
+            if completeness["supported_count"] else True
+        ),
+        "requirements_complete": not missing_slots and not missing_relations,
+        "terminal_punctuation": bool(re.search(r"[。！？!?）」』】]$", text)),
+        "completion_confirmed": bool(completion_confirmed),
+    }
+    return {
+        "passed": all(checks.values()),
+        "checks": checks,
+        "grounding_reason": grounding_reason,
+        "attribute_reason": attribute_reason,
+        "completeness": completeness,
+        "claims": claims,
+        "independent_claim_validation": independent,
+        "missing_slots": missing_slots,
+        "missing_relations": missing_relations,
+    }
+
+
 def answer_with_pipeline(
     question: str,
     hits: Iterable[dict],
@@ -702,7 +767,7 @@ def answer_with_pipeline(
     *,
     retry: bool = False,
     continuation: bool = True,
-    max_continuations: int = 2,
+    max_continuations: int = 1,
     prefer_evidence_assembly: bool = False,
     force_generation: bool = True,
     prompt_style: str = "rwkv7_fewshot",
@@ -735,13 +800,11 @@ def answer_with_pipeline(
     # Explicit force_generation callers retain the model-only path for A/B tests.
     if prefer_evidence_assembly and not force_generation:
         assembled = assemble_evidence_answer(plan)
-        assembled_valid = (
-            bool(assembled)
-            and validate_answer(assembled, question, selected)[0]
-            and validate_composed_answer(assembled, attribute_ledger, attribute_validation)[0]
-            and not _missing_relations(question, assembled, selected)
+        assembled_gate = _evaluate_final_output(
+            assembled, question, selected, attribute_ledger, attribute_validation,
+            completion_confirmed=True,
         )
-        if assembled_valid:
+        if assembled_gate["passed"]:
             return {
                 "answer": assembled,
                 "status": "evidence_assembled",
@@ -752,6 +815,10 @@ def answer_with_pipeline(
                 "answer_plan": plan,
                 "attribute_ledger": attribute_ledger,
                 "attribute_validation": attribute_validation,
+                "attribute_completeness": assembled_gate["completeness"],
+                "attribute_claim_validation": assembled_gate["claims"],
+                "final_output_gate": {"passed": True, "checks": assembled_gate["checks"]},
+                "independent_claim_validation": assembled_gate["independent_claim_validation"],
                 "progress": build_progress_summary(plan, validated=True),
             }
 
@@ -775,9 +842,22 @@ def answer_with_pipeline(
             prompt = base_prompt
             state = "generating_initial"
         else:
-            missing_before = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
-            prompt = _continuation_prompt(question, selected, accumulated, missing_before)
-            state = "generating_continuation"
+            missing_attributes = missing_supported_attributes(
+                attribute_ledger, attribute_validation, accumulated
+            )
+            if missing_attributes:
+                retry_target = missing_attributes[:1]
+                prompt = build_attribute_retry_prompt(
+                    question, accumulated, attribute_ledger,
+                    attribute_validation, retry_target,
+                )
+                rounds[-1]["retry_target_attributes"] = retry_target
+                state = "generating_attribute_retry"
+            else:
+                missing_before = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
+                prompt = _continuation_prompt(question, selected, accumulated, missing_before)
+                rounds[-1]["retry_target_attributes"] = []
+                state = "generating_relation_retry"
         prompt = build_rwkv7_prompt(prompt, prompt_style)
         try:
             raw = generator(prompt)
@@ -792,6 +872,9 @@ def answer_with_pipeline(
             state = "failed"
             break
 
+        # Parse only a terminal protocol marker before contamination checks.
+        # Embedded control tags remain in the text and are rejected.
+        candidate, marker = _strip_control_markers(candidate)
         contamination = _generation_contamination_reason(candidate, question, accumulated)
         truncated = _is_truncated(metadata)
         if contamination:
@@ -805,7 +888,6 @@ def answer_with_pipeline(
             last_reason = "prompt_contamination:" + contamination
             state = "contaminated"
             break
-        candidate, marker = _strip_control_markers(candidate)
         candidate = _clean_generation_delta(candidate, question)
         rounds.append({
             "round": round_index + 1,
@@ -831,20 +913,47 @@ def answer_with_pipeline(
                 break
             accumulated = proposed
         valid, last_reason = validate_answer(accumulated, question, selected)
-        missing = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
-        text_complete = marker == "end" or bool(re.search(r"[。！？!?）」』】]$", accumulated.strip()))
+        missing = list(dict.fromkeys(
+            missing_supported_attributes(attribute_ledger, attribute_validation, accumulated)
+            + _missing_slots(question, accumulated, selected)
+            + _missing_relations(question, accumulated, selected)
+        ))
+        sentence_complete = marker == "end" or bool(re.search(r"[。！？!?）」』】]$", accumulated.strip()))
+        text_complete = not truncated and sentence_complete
         rounds[-1]["validation_reason"] = last_reason
         rounds[-1]["numeric_diagnostics"] = _numeric_claim_diagnostics(accumulated, selected)
         rounds[-1]["completion_signal"] = marker or ("punctuation" if text_complete else None)
-        attribute_ok, attribute_reason = validate_composed_answer(accumulated, attribute_ledger, attribute_validation)
-        rounds[-1]["attribute_validation"] = attribute_reason
-        if valid and attribute_ok and not missing and text_complete:
+        output_gate = _evaluate_final_output(
+            accumulated, question, selected, attribute_ledger, attribute_validation,
+            completion_confirmed=text_complete,
+        )
+        completeness = output_gate["completeness"]
+        claim_validation = output_gate["claims"]
+        rounds[-1]["attribute_validation"] = output_gate["attribute_reason"]
+        rounds[-1]["independent_claim_validation"] = output_gate["independent_claim_validation"]
+        if output_gate["passed"]:
             rounds[-1]["state"] = "completed"
             state = "completed"
             return {"answer": accumulated.strip(), "status": "generated",
                     "reason": "semantic_completion", "retrieval": decision,
                     "generation_rounds": rounds, "missing_slots": [],
-                    "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "progress": build_progress_summary(plan, validated=True)}
+                    "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "attribute_completeness": completeness, "attribute_claim_validation": claim_validation, "final_output_gate": {"passed": True, "checks": output_gate["checks"]}, "independent_claim_validation": output_gate["independent_claim_validation"], "progress": build_progress_summary(plan, validated=True)}
+
+        # A hard token-limit stop is terminal when no evidence-backed slot
+        # remains to fill. Retrying the same complete-looking text cannot
+        # establish completion and may misclassify the repeated prefix as
+        # prompt contamination on the next round.
+        if truncated and not missing and sentence_complete:
+            rounds[-1]["state"] = "completion_unconfirmed"
+            state = "exhausted"
+            break
+
+        # If no requirement remains missing and the answer is complete, another
+        # generation pass cannot add verified coverage.
+        if not missing and text_complete:
+            rounds[-1]["state"] = "completion_unconfirmed"
+            state = "exhausted"
+            break
 
         if not continuation or round_index + 1 >= max_rounds:
             rounds[-1]["state"] = "round_limit" if round_index + 1 >= max_rounds else "single_pass"
@@ -903,6 +1012,58 @@ def answer_with_pipeline(
         rounds[-1]["state"] = "continue"
         state = "continuing"
 
+    if retry and not accumulated and state not in {"failed", "contaminated", "rejected"}:
+        retry_targets = missing_supported_attributes(
+            attribute_ledger, attribute_validation, accumulated
+        )[:1]
+        if retry_targets:
+            retry_round = {
+                "round": len(rounds) + 1, "retry": True,
+                "retry_target_attributes": retry_targets,
+            }
+            try:
+                retry_prompt = build_attribute_retry_prompt(
+                    question, accumulated, attribute_ledger,
+                    attribute_validation, retry_targets,
+                )
+                raw = generator(build_rwkv7_prompt(retry_prompt, prompt_style))
+                candidate, metadata = _generation_payload(raw)
+                candidate, marker = _strip_control_markers(candidate)
+                contamination = _generation_contamination_reason(candidate, question)
+                if contamination:
+                    retry_round.update({"state": "contaminated", "contamination_reason": contamination})
+                    state = "contaminated"
+                    last_reason = "prompt_contamination:" + contamination
+                else:
+                    candidate = _clean_generation_delta(candidate, question)
+                    retry_truncated = _is_truncated(metadata)
+                    retry_complete = not retry_truncated and (
+                        marker == "end" or bool(re.search(r"[。！？!?）」』】]$", candidate.strip()))
+                    )
+                    retry_gate = _evaluate_final_output(
+                        candidate, question, selected, attribute_ledger, attribute_validation,
+                        completion_confirmed=retry_complete,
+                    )
+                    retry_round.update({
+                        "state": "completed" if retry_gate["passed"] else "rejected",
+                        "marker": marker,
+                        "truncated": retry_truncated,
+                        "final_output_gate": retry_gate["checks"],
+                        "independent_checker": retry_gate["independent_claim_validation"],
+                    })
+                    if retry_gate["passed"]:
+                        accumulated = candidate
+                        state = "completed"
+                        last_reason = "accepted"
+                    else:
+                        state = "retry_rejected"
+                        last_reason = "retry_final_output_gate_rejected"
+            except Exception as exc:
+                retry_round.update({"state": "generation_error", "error": type(exc).__name__})
+                state = "failed"
+                last_reason = "retry_generation_error"
+            rounds.append(retry_round)
+
     # Contamination is a hard failure: quarantine the entire generation state.
     # No partial prefix from earlier rounds is exposed or passed to downstream logic.
     if state == "contaminated":
@@ -910,79 +1071,113 @@ def answer_with_pipeline(
                 "reason": last_reason, "retrieval": decision,
                 "generation_rounds": rounds, "missing_slots": [],
                 "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "progress": build_progress_summary(plan, validated=False)}
-
-    if retry and not accumulated and state not in {"failed", "contaminated", "rejected"}:
-        try:
-            raw = generator(base_prompt + "\n根拠中の回答可能な事実だけを簡潔に回答してください。")
-            candidate, _ = _generation_payload(raw)
-            contamination = _generation_contamination_reason(candidate, question)
-            if not contamination:
-                candidate, _ = _strip_control_markers(candidate)
-                candidate = _clean_generation_delta(candidate, question)
-                valid_retry, _ = validate_answer(candidate, question, selected)
-                if valid_retry:
-                    accumulated = candidate
-        except Exception:
-            pass
-    valid, validation_reason = validate_answer(accumulated, question, selected)
+    final_gate = _evaluate_final_output(
+        accumulated, question, selected, attribute_ledger, attribute_validation,
+        completion_confirmed=(state == "completed"),
+    )
+    validation_reason = final_gate["grounding_reason"]
     if state not in {"failed", "contaminated"}:
         last_reason = validation_reason
-    missing = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
-    attribute_ok, attribute_reason = validate_composed_answer(accumulated, attribute_ledger, attribute_validation)
-    if valid and attribute_ok and not missing and re.search(r"[。！？!?）」』】]$", accumulated.strip()):
+    missing = final_gate["missing_slots"] + final_gate["missing_relations"]
+    final_completeness = final_gate["completeness"]
+    final_claim_validation = final_gate["claims"]
+    attribute_reason = final_gate["attribute_reason"]
+    if final_gate["passed"] and state == "completed":
         return {"answer": accumulated.strip(), "status": "generated",
                 "reason": "semantic_completion", "retrieval": decision,
                 "generation_rounds": rounds, "missing_slots": [],
-                "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "progress": build_progress_summary(plan, validated=True)}
+                "answer_plan": plan, "attribute_ledger": attribute_ledger,
+                "attribute_validation": attribute_validation,
+                "attribute_completeness": final_completeness,
+                "attribute_claim_validation": final_claim_validation,
+                "final_output_gate": {"passed": True, "checks": final_gate["checks"]},
+                "independent_claim_validation": final_gate["independent_claim_validation"],
+                "progress": build_progress_summary(plan, validated=True)}
     # Generation-required callers must be able to distinguish an incomplete
     # generation from a deterministic answer. Never hide a failed LLM attempt
     # by silently replacing it with evidence assembly.
     if force_generation:
-        draft_valid, draft_reason = validate_answer(accumulated, question, selected)
-        attribute_ok, attribute_reason = validate_composed_answer(accumulated, attribute_ledger, attribute_validation)
+        draft_valid = final_gate["checks"]["answer_grounded"]
+        draft_reason = final_gate["grounding_reason"]
+        attribute_ok = final_gate["checks"]["attributes_valid"]
+        attribute_reason = final_gate["attribute_reason"]
         if state == "contaminated":
             forced_status = "generation_contaminated"
             forced_reason = last_reason
-            visible_answer = ABSTAIN
         elif state == "failed":
             forced_status = "generation_error"
             forced_reason = last_reason
-            visible_answer = accumulated.strip() if draft_valid and attribute_ok else ABSTAIN
         else:
             forced_status = "generation_incomplete"
             forced_reason = (
                 "requirements_incomplete" if missing else
                 ("answer_not_grounded" if not draft_valid else "completion_not_confirmed")
             )
-            visible_answer = accumulated.strip() if draft_valid else ABSTAIN
+        # Final Output Gate: only the earlier fully validated "completed" path
+        # may publish generated text. Every non-completed candidate is quarantined,
+        # even when lexical grounding alone passes. This prevents placeholders,
+        # partial answers, and failed-round prefixes from leaking to callers.
+        final_gate_checks = dict(final_gate["checks"])
+        final_gate_checks["generation_state_completed"] = state == "completed"
+        final_gate_passed = final_gate["passed"] and final_gate_checks["generation_state_completed"]
+        visible_answer = accumulated.strip() if final_gate_passed else ABSTAIN
         return {"answer": visible_answer, "status": forced_status,
                 "reason": forced_reason, "validation_reason": draft_reason,
                 "retrieval": decision, "generation_rounds": rounds,
                 "missing_slots": missing, "answer_plan": plan,
                 "progress": build_progress_summary(plan, validated=False),
-                "attribute_validation_reason": attribute_reason, "numeric_diagnostics": _numeric_claim_diagnostics(accumulated, selected)}
+                "attribute_validation_reason": attribute_reason,
+                "attribute_completeness": final_completeness,
+                "attribute_claim_validation": final_claim_validation,
+                "final_output_gate": {"passed": final_gate_passed, "checks": final_gate_checks},
+                "independent_claim_validation": final_gate["independent_claim_validation"],
+                "candidate_diagnostics": {
+                    "candidate": accumulated.strip(),
+                    "quarantined": bool(accumulated.strip()) and not final_gate_passed,
+                },
+                "numeric_diagnostics": _numeric_claim_diagnostics(accumulated, selected)}
 
     assembled = assemble_evidence_answer(plan)
-    assembled_valid = (bool(assembled) and validate_answer(assembled, question, selected)[0]
-                       and not _missing_relations(question, assembled, selected))
-    if assembled_valid:
+    assembled_gate = _evaluate_final_output(
+        assembled, question, selected, attribute_ledger, attribute_validation,
+        completion_confirmed=True,
+    )
+    if assembled_gate["passed"]:
         return {"answer": assembled, "status": "evidence_assembled",
                 "reason": "generation_incomplete_but_requirements_have_direct_evidence",
                 "retrieval": decision, "generation_rounds": rounds, "missing_slots": [],
-                "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
+                "answer_plan": plan, "attribute_ledger": attribute_ledger,
+                "attribute_validation": attribute_validation,
+                "attribute_completeness": assembled_gate["completeness"],
+                "attribute_claim_validation": assembled_gate["claims"],
+                "final_output_gate": {"passed": True, "checks": assembled_gate["checks"]},
+                "independent_claim_validation": assembled_gate["independent_claim_validation"],
+                "progress": build_progress_summary(plan, validated=True)}
     fallback = extractive_fallback(question, selected, max_sentences=4)
-    fallback_missing_slots = _missing_slots(question, fallback, selected)
-    fallback_missing_relations = _missing_relations(question, fallback, selected)
-    fallback_complete = not fallback_missing_slots and not fallback_missing_relations
+    fallback_gate = _evaluate_final_output(
+        fallback, question, selected, attribute_ledger, attribute_validation,
+        completion_confirmed=True,
+    )
     fallback_reason = (last_reason if last_reason != "accepted" else "incomplete_answer")
+    if not fallback_gate["passed"]:
+        return {"answer": ABSTAIN, "status": "abstained",
+                "reason": "final_output_gate_rejected",
+                "retrieval": decision, "generation_rounds": rounds,
+                "missing_slots": fallback_gate["missing_slots"] + fallback_gate["missing_relations"],
+                "final_output_gate": {"passed": False, "checks": fallback_gate["checks"]},
+                "independent_claim_validation": fallback_gate["independent_claim_validation"],
+                "candidate_diagnostics": {"candidate": fallback, "quarantined": bool(fallback)},
+                "answer_plan": plan, "progress": build_progress_summary(plan, validated=False)}
     return {"answer": fallback, "status": "extractive_fallback",
             "reason": fallback_reason,
-            "retrieval": decision, "generation_rounds": rounds, "missing_slots": missing,
-            "fallback_validation": {"complete": fallback_complete,
-                "missing_slots": fallback_missing_slots,
-                "missing_relations": fallback_missing_relations},
+            "retrieval": decision, "generation_rounds": rounds,
+            "missing_slots": fallback_gate["missing_slots"] + fallback_gate["missing_relations"],
+            "attribute_completeness": fallback_gate["completeness"],
+            "attribute_claim_validation": fallback_gate["claims"],
+            "final_output_gate": {"passed": True, "checks": fallback_gate["checks"]},
+            "independent_claim_validation": fallback_gate["independent_claim_validation"],
             "numeric_diagnostics": _numeric_claim_diagnostics(accumulated, selected),
-            "answer_plan": plan, "progress": build_progress_summary(plan, validated=valid and not missing)}
+            "answer_plan": plan, "progress": build_progress_summary(plan, validated=True)}
 
 
 def local_llama_generator(endpoint: str = "http://127.0.0.1:8080", max_tokens: int = 64,
