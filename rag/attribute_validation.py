@@ -138,13 +138,15 @@ def build_composer_prompt(base_prompt: str, ledger: dict, validation: dict) -> s
             "evidence": item.get("bindings", []),
         })
     template_policy = (
-        "\n回答文の作成手順:\n"
-        "1. 質問に適した短い回答文を作成する。\n"
-        "2. 属性値はATTRIBUTE_BINDINGS_JSONの検証済み値だけを使い、"
-        "言い換え・補完・推測・単位変更をしない。\n"
-        "3. 検証済み属性をすべて一度ずつ含める。"
-        "プレースホルダーを最終回答に残さない。\n"
-        "4. 根拠にない説明や一般論を追加しない。回答本文だけを出力する。\n"
+        "\\n回答文の作成手順:\\n"
+        "1. まず質問に適した短い日本語の回答文テンプレートを内部で設計する。"
+        "テンプレートには属性ごとの差し込み位置を設ける。\\n"
+        "2. 差し込み位置にはATTRIBUTE_BINDINGS_JSONで検証済みの属性値だけを入れる。"
+        "値の言い換え、補完、推測、単位変更は禁止。\\n"
+        "3. 検証済み属性をすべて一度ずつ含める。例えば「担当者は{owner}です。"
+        "期限は{deadline}です。」の形で構成する。\\n"
+        "波括弧のプレースホルダー自体は最終回答に残さない。\\n"
+        "4. 根拠にない説明や一般論を追加しない。回答本文だけを出力する。\\n"
     )
     return (base_prompt + "\nATTRIBUTE_BINDINGS_JSON (verified data only):\n"
             + json.dumps(allowed, ensure_ascii=False, separators=(",", ":"))

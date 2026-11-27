@@ -15,6 +15,18 @@ _NUMERIC_RE = re.compile(
 )
 
 
+def _claim_tokens(text: str) -> list[str]:
+    """Tokenize Japanese runs into the same character bigrams used by retrieval."""
+    tokens = []
+    for token in re.findall(r"[ぁ-んァ-ヶ一-龠ー]+|[a-z0-9_]+", (text or "").casefold()):
+        if re.fullmatch(r"[ぁ-んァ-ヶ一-龠ー]+", token):
+            tokens.extend([token] if len(token) == 1 else
+                          [token[index:index + 2] for index in range(len(token) - 1)])
+        else:
+            tokens.append(token)
+    return list(dict.fromkeys(tokens))
+
+
 def missing_supported_attributes(ledger: dict, validation: dict, answer: str) -> list[str]:
     """Return only supported attributes whose exact bound value is absent."""
     text = answer or ""
@@ -83,7 +95,7 @@ def validate_answer_claims(answer: str, ledger: dict, validation: dict,
         claim = re.sub(r"[（(]出典\s*[:：][^）)]*[）)]", "", raw_claim).strip()
         if not claim:
             continue
-        tokens = list(dict.fromkeys(_CLAIM_TOKEN_RE.findall(claim)))
+        tokens = _claim_tokens(claim)
         if not tokens:
             continue
         best_id, best_ratio = None, 0.0
