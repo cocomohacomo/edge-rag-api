@@ -819,7 +819,6 @@ def answer_with_pipeline(
                 "attribute_claim_validation": assembled_gate["claims"],
                 "final_output_gate": {"passed": True, "checks": assembled_gate["checks"]},
                 "independent_claim_validation": assembled_gate["independent_claim_validation"],
-                "independent_claim_validation": assembled_gate["independent_claim_validation"],
                 "progress": build_progress_summary(plan, validated=True),
             }
 
@@ -938,7 +937,7 @@ def answer_with_pipeline(
             return {"answer": accumulated.strip(), "status": "generated",
                     "reason": "semantic_completion", "retrieval": decision,
                     "generation_rounds": rounds, "missing_slots": [],
-                    "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "attribute_completeness": completeness, "attribute_claim_validation": claim_validation, "final_output_gate": {"passed": True, "checks": output_gate["checks"]}, "progress": build_progress_summary(plan, validated=True)}
+                    "answer_plan": plan, "attribute_ledger": attribute_ledger, "attribute_validation": attribute_validation, "attribute_completeness": completeness, "attribute_claim_validation": claim_validation, "final_output_gate": {"passed": True, "checks": output_gate["checks"]}, "independent_claim_validation": output_gate["independent_claim_validation"], "progress": build_progress_summary(plan, validated=True)}
 
         # A hard token-limit stop is terminal when no evidence-backed slot
         # remains to fill. Retrying the same complete-looking text cannot
@@ -1092,6 +1091,7 @@ def answer_with_pipeline(
                 "attribute_completeness": final_completeness,
                 "attribute_claim_validation": final_claim_validation,
                 "final_output_gate": {"passed": True, "checks": final_gate["checks"]},
+                "independent_claim_validation": final_gate["independent_claim_validation"],
                 "progress": build_progress_summary(plan, validated=True)}
     # Generation-required callers must be able to distinguish an incomplete
     # generation from a deterministic answer. Never hide a failed LLM attempt
@@ -1151,6 +1151,7 @@ def answer_with_pipeline(
                 "attribute_completeness": assembled_gate["completeness"],
                 "attribute_claim_validation": assembled_gate["claims"],
                 "final_output_gate": {"passed": True, "checks": assembled_gate["checks"]},
+                "independent_claim_validation": assembled_gate["independent_claim_validation"],
                 "progress": build_progress_summary(plan, validated=True)}
     fallback = extractive_fallback(question, selected, max_sentences=4)
     fallback_gate = _evaluate_final_output(
