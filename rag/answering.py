@@ -913,7 +913,7 @@ def answer_with_pipeline(
         # If no answer requirement remains missing, another generation pass
         # cannot add verified coverage. In particular, a token-limited answer
         # with complete-looking punctuation must be rejected without looping.
-        if not missing:
+        if not missing and text_complete:
             rounds[-1]["state"] = "completion_unconfirmed"
             state = "exhausted"
             break
