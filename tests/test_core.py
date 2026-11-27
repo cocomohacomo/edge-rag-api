@@ -763,3 +763,78 @@ class ShortFactListPromptTests(unittest.TestCase):
         answer = "端末: i5-10310U\nメモリ: 8GB RAM。"
         ok, reason = validate_composed_answer(answer, ledger, validation)
         self.assertTrue(ok, reason)
+
+
+
+class AnswerCompletenessRefactorTests(unittest.TestCase):
+    def test_attribute_bindings_use_exact_retrieval_unit_not_same_source_name(self):
+        from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger
+        hits = [
+            {"source": "same.md", "text": "担当者は佐藤です。"},
+            {"source": "same.md", "text": "期限は12月15日です。"},
+        ]
+        plan = build_answer_plan("担当者と期限は？", hits)
+        ledger = build_attribute_ledger(plan, hits)
+        owner = next(item for item in ledger["attributes"] if item["attribute"] == "owner")
+        deadline = next(item for item in ledger["attributes"] if item["attribute"] == "deadline")
+        self.assertEqual({item["evidence_id"] for item in owner["bindings"]}, {"E1"})
+        self.assertEqual({item["evidence_id"] for item in deadline["bindings"]}, {"E2"})
+        self.assertEqual(validate_attribute_ledger(ledger)["supported"], ["owner", "deadline"])
+
+    def test_attribute_binding_rejects_forged_span_even_if_quote_equals_value(self):
+        from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger
+        hits = [{"source": "minutes.md", "text": "担当者は佐藤です。"}]
+        ledger = build_attribute_ledger(build_answer_plan("担当者は？", hits), hits)
+        binding = ledger["attributes"][0]["bindings"][0]
+        binding["start"] = binding["start"] + 1
+        checked = validate_attribute_ledger(ledger)
+        self.assertEqual(checked["insufficient"], ["owner"])
+
+    def test_retry_prompt_targets_only_one_missing_supported_attribute(self):
+        from rag.attribute_validation import (
+            build_attribute_ledger, validate_attribute_ledger, build_attribute_retry_prompt,
+        )
+        hits = [{"source": "minutes.md", "text": "担当者は佐藤です。提出期限は12月15日です。"}]
+        ledger = build_attribute_ledger(build_answer_plan("担当者と提出期限は？", hits), hits)
+        validation = validate_attribute_ledger(ledger)
+        prompt = build_attribute_retry_prompt(
+            "担当者と提出期限は？", "担当者は佐藤です。", ledger, validation, ["deadline"]
+        )
+        self.assertIn('"attribute":"deadline"', prompt)
+        self.assertNotIn('"attribute":"owner"', prompt)
+        self.assertIn('"evidence_id":"E1"', prompt)
+        self.assertIn("担当者は佐藤です。", prompt)
+
+    def test_only_missing_attribute_is_retried_and_result_is_rechecked(self):
+        hits = [{"score": .9, "source": "minutes.md",
+                 "text": "会議の担当者は佐藤です。提出期限は12月15日です。"}]
+        prompts = []
+        def generator(prompt):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return {"content": "担当者は佐藤です。<CONTINUE>",
+                        "stop": True, "tokens_predicted": 12, "n_predict": 48}
+            return {"content": "提出期限は12月15日です。<END_ANSWER>",
+                    "stop": True, "tokens_predicted": 12, "n_predict": 24}
+        result = answer_with_pipeline(
+            "会議の担当者と提出期限は？", hits, generator,
+            continuation=True, max_continuations=1, force_generation=True,
+        )
+        self.assertEqual(result["status"], "generated")
+        self.assertIn('"attribute":"deadline"', prompts[1])
+        self.assertNotIn('"attribute":"owner"', prompts[1])
+        self.assertEqual(result["attribute_completeness"]["completeness_rate"], 1.0)
+        self.assertTrue(result["final_output_gate"]["checks"]["claims_independently_supported"])
+        self.assertEqual(result["generation_rounds"][0]["retry_target_attributes"], ["deadline"])
+
+    def test_independent_checker_rejects_unsupported_claim_even_when_other_sentence_is_grounded(self):
+        from rag.attribute_validation import build_attribute_ledger, validate_attribute_ledger
+        from rag.quality_metrics import validate_answer_claims
+        hits = [{"source": "spec.md", "text": "対象端末はi5-10310U。メモリ要件は8GB RAM。"}]
+        ledger = build_attribute_ledger(build_answer_plan("端末とメモリは？", hits), hits)
+        validation = validate_attribute_ledger(ledger)
+        answer = "端末はi5-10310Uです。予算は500万円です。"
+        checked = validate_answer_claims(answer, ledger, validation)
+        self.assertFalse(checked["valid"])
+        self.assertTrue(checked["unsupported_claims"])
+        self.assertIn("500万円", checked["unsupported_identifiers"])

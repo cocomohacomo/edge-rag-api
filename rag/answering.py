@@ -7,12 +7,12 @@ from typing import Callable, Iterable
 try:
     from .attribute_validation import (
         build_attribute_ledger, validate_attribute_ledger,
-        build_composer_prompt, validate_composed_answer,
+        build_composer_prompt, build_attribute_retry_prompt, validate_composed_answer,
     )
 except ImportError:  # direct execution via rag/cli.py
     from attribute_validation import (
         build_attribute_ledger, validate_attribute_ledger,
-        build_composer_prompt, validate_composed_answer,
+        build_composer_prompt, build_attribute_retry_prompt, validate_composed_answer,
     )
 import json
 import urllib.request
@@ -23,10 +23,12 @@ except ImportError:  # direct execution via rag/cli.py
     from evidence_ledger import build_evidence_ledger, render_ledger
 
 try:
-    from .quality_metrics import evaluate_attribute_completeness, validate_attribute_claims
+    from .quality_metrics import (evaluate_attribute_completeness, validate_attribute_claims,
+                                  missing_supported_attributes, validate_answer_claims)
     from .core import japanese_terms
 except ImportError:  # direct execution via rag/cli.py
-    from quality_metrics import evaluate_attribute_completeness, validate_attribute_claims
+    from quality_metrics import (evaluate_attribute_completeness, validate_attribute_claims,
+                                 missing_supported_attributes, validate_answer_claims)
     from core import japanese_terms
 
 
@@ -360,7 +362,7 @@ def build_answer_plan(question: str, hits: Iterable[dict]) -> dict:
     mapping = {}
     for slot in requirements:
         candidates = []
-        for hit in sources:
+        for hit_index, hit in enumerate(sources, 1):
             text = str(hit.get("text", ""))
             if slot == "url":
                 matched = re.findall(r"""https?://[^\s<>"'、。]+""", text)
@@ -370,6 +372,7 @@ def build_answer_plan(question: str, hits: Iterable[dict]) -> dict:
                 matched = _slot_values(slot, text)
             if matched:
                 candidates.append({
+                    "evidence_id": f"E{hit_index}",
                     "source": str(hit.get("source", "unknown")),
                     "values": list(dict.fromkeys(matched))[:4],
                     "evidence": text[:360],
@@ -385,7 +388,7 @@ def build_answer_plan(question: str, hits: Iterable[dict]) -> dict:
     for index, hit in enumerate(sources):
         text = str(hit.get("text", ""))
         covered = sum(1 for slot in requirements if any(
-            item["source"] == str(hit.get("source", "unknown"))
+            item.get("evidence_id") == f"E{index + 1}"
             for item in mapping.get(slot, [])
         ))
         lexical = len(q_terms & set(japanese_terms(text))) / max(1, len(q_terms))
@@ -724,13 +727,18 @@ def _evaluate_final_output(
         attribute_ledger, attribute_validation, text
     )
     claims = validate_attribute_claims(text, attribute_ledger, attribute_validation)
-    missing_slots = _missing_slots(question, text, selected)
+    independent = validate_answer_claims(text, attribute_ledger, attribute_validation)
+    missing_slots = list(dict.fromkeys(
+        missing_supported_attributes(attribute_ledger, attribute_validation, text)
+        + _missing_slots(question, text, selected)
+    ))
     missing_relations = _missing_relations(question, text, selected)
     checks = {
         "non_empty": bool(text) and text != ABSTAIN,
         "answer_grounded": grounded,
         "attributes_valid": attributes_valid,
         "claims_valid": claims["valid"],
+        "claims_independently_supported": independent["valid"],
         "attributes_complete": (
             completeness["completeness_rate"] == 1.0
             if completeness["supported_count"] else True
@@ -746,6 +754,7 @@ def _evaluate_final_output(
         "attribute_reason": attribute_reason,
         "completeness": completeness,
         "claims": claims,
+        "independent_claim_validation": independent,
         "missing_slots": missing_slots,
         "missing_relations": missing_relations,
     }
@@ -832,9 +841,22 @@ def answer_with_pipeline(
             prompt = base_prompt
             state = "generating_initial"
         else:
-            missing_before = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
-            prompt = _continuation_prompt(question, selected, accumulated, missing_before)
-            state = "generating_continuation"
+            missing_attributes = missing_supported_attributes(
+                attribute_ledger, attribute_validation, accumulated
+            )
+            if missing_attributes:
+                retry_target = missing_attributes[:1]
+                prompt = build_attribute_retry_prompt(
+                    question, accumulated, attribute_ledger,
+                    attribute_validation, retry_target,
+                )
+                rounds[-1]["retry_target_attributes"] = retry_target
+                state = "generating_attribute_retry"
+            else:
+                missing_before = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
+                prompt = _continuation_prompt(question, selected, accumulated, missing_before)
+                rounds[-1]["retry_target_attributes"] = []
+                state = "generating_relation_retry"
         prompt = build_rwkv7_prompt(prompt, prompt_style)
         try:
             raw = generator(prompt)
@@ -890,7 +912,11 @@ def answer_with_pipeline(
                 break
             accumulated = proposed
         valid, last_reason = validate_answer(accumulated, question, selected)
-        missing = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
+        missing = list(dict.fromkeys(
+            missing_supported_attributes(attribute_ledger, attribute_validation, accumulated)
+            + _missing_slots(question, accumulated, selected)
+            + _missing_relations(question, accumulated, selected)
+        ))
         sentence_complete = marker == "end" or bool(re.search(r"[。！？!?）」』】]$", accumulated.strip()))
         text_complete = not truncated and sentence_complete
         rounds[-1]["validation_reason"] = last_reason
@@ -985,45 +1011,56 @@ def answer_with_pipeline(
         state = "continuing"
 
     if retry and not accumulated and state not in {"failed", "contaminated", "rejected"}:
-        retry_round = {"round": len(rounds) + 1, "retry": True}
-        try:
-            raw = generator(base_prompt + "\n根拠中の回答可能な事実だけを簡潔に回答してください。")
-            candidate, metadata = _generation_payload(raw)
-            candidate, marker = _strip_control_markers(candidate)
-            contamination = _generation_contamination_reason(candidate, question)
-            if contamination:
-                retry_round.update({"state": "contaminated", "contamination_reason": contamination})
-                state = "contaminated"
-                last_reason = "prompt_contamination:" + contamination
-            else:
-                candidate = _clean_generation_delta(candidate, question)
-                retry_truncated = _is_truncated(metadata)
-                retry_complete = not retry_truncated and (
-                    marker == "end" or bool(re.search(r"[。！？!?）」』】]$", candidate.strip()))
+        retry_targets = missing_supported_attributes(
+            attribute_ledger, attribute_validation, accumulated
+        )[:1]
+        if retry_targets:
+            retry_round = {
+                "round": len(rounds) + 1, "retry": True,
+                "retry_target_attributes": retry_targets,
+            }
+            try:
+                retry_prompt = build_attribute_retry_prompt(
+                    question, accumulated, attribute_ledger,
+                    attribute_validation, retry_targets,
                 )
-                retry_gate = _evaluate_final_output(
-                    candidate, question, selected, attribute_ledger, attribute_validation,
-                    completion_confirmed=retry_complete,
-                )
-                retry_round.update({
-                    "state": "completed" if retry_gate["passed"] else "rejected",
-                    "marker": marker,
-                    "completion_signal": marker or ("punctuation" if retry_complete else None),
-                    "truncated": retry_truncated,
-                    "final_output_gate": retry_gate["checks"],
-                })
-                if retry_gate["passed"]:
-                    accumulated = candidate
-                    state = "completed"
-                    last_reason = "accepted"
+                raw = generator(build_rwkv7_prompt(retry_prompt, prompt_style))
+                candidate, metadata = _generation_payload(raw)
+                candidate, marker = _strip_control_markers(candidate)
+                contamination = _generation_contamination_reason(candidate, question)
+                if contamination:
+                    retry_round.update({"state": "contaminated", "contamination_reason": contamination})
+                    state = "contaminated"
+                    last_reason = "prompt_contamination:" + contamination
                 else:
-                    state = "retry_rejected"
-                    last_reason = "retry_final_output_gate_rejected"
-        except Exception as exc:
-            retry_round.update({"state": "generation_error", "error": type(exc).__name__})
-            state = "failed"
-            last_reason = "retry_generation_error"
-        rounds.append(retry_round)
+                    candidate = _clean_generation_delta(candidate, question)
+                    retry_truncated = _is_truncated(metadata)
+                    retry_complete = not retry_truncated and (
+                        marker == "end" or bool(re.search(r"[。！？!?）」』】]$", candidate.strip()))
+                    )
+                    retry_gate = _evaluate_final_output(
+                        candidate, question, selected, attribute_ledger, attribute_validation,
+                        completion_confirmed=retry_complete,
+                    )
+                    retry_round.update({
+                        "state": "completed" if retry_gate["passed"] else "rejected",
+                        "marker": marker,
+                        "truncated": retry_truncated,
+                        "final_output_gate": retry_gate["checks"],
+                        "independent_checker": retry_gate["independent_claim_validation"],
+                    })
+                    if retry_gate["passed"]:
+                        accumulated = candidate
+                        state = "completed"
+                        last_reason = "accepted"
+                    else:
+                        state = "retry_rejected"
+                        last_reason = "retry_final_output_gate_rejected"
+            except Exception as exc:
+                retry_round.update({"state": "generation_error", "error": type(exc).__name__})
+                state = "failed"
+                last_reason = "retry_generation_error"
+            rounds.append(retry_round)
 
     # Contamination is a hard failure: quarantine the entire generation state.
     # No partial prefix from earlier rounds is exposed or passed to downstream logic.
