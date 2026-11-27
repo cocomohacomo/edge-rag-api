@@ -891,7 +891,8 @@ def answer_with_pipeline(
             accumulated = proposed
         valid, last_reason = validate_answer(accumulated, question, selected)
         missing = _missing_slots(question, accumulated, selected) + _missing_relations(question, accumulated, selected)
-        text_complete = not truncated and (marker == "end" or bool(re.search(r"[。！？!?）」』】]$", accumulated.strip())))
+        sentence_complete = marker == "end" or bool(re.search(r"[。！？!?）」』】]$", accumulated.strip()))
+        text_complete = not truncated and sentence_complete
         rounds[-1]["validation_reason"] = last_reason
         rounds[-1]["numeric_diagnostics"] = _numeric_claim_diagnostics(accumulated, selected)
         rounds[-1]["completion_signal"] = marker or ("punctuation" if text_complete else None)
@@ -914,7 +915,7 @@ def answer_with_pipeline(
         # remains to fill. Retrying the same complete-looking text cannot
         # establish completion and may misclassify the repeated prefix as
         # prompt contamination on the next round.
-        if truncated and not missing and text_complete:
+        if truncated and not missing and sentence_complete:
             rounds[-1]["state"] = "completion_unconfirmed"
             state = "exhausted"
             break
